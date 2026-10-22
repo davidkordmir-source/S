@@ -1,0 +1,28 @@
+name: Native raster reader validation
+on:
+  push:
+    branches: [atlas-raster-codecs]
+jobs:
+  raster:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and test the offline ECW reader
+        shell: pwsh
+        run: |
+          python scripts/bundle-raster.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native raster reader validation failed.' }
+          Get-Content .raster-bundle/third-party-licenses/gdal-ecw.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: raster-reader-diagnostics
+          path: |
+            .raster-bundle/manifest.json
+            .raster-bundle/native-validation.json
+            .raster-bundle/third-party-licenses/*
+          retention-days: 7
