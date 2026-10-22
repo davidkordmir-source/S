@@ -11,12 +11,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Build and test the offline ECW reader
+      - name: Build and test open raster tools
         shell: pwsh
         run: |
           python scripts/bundle-raster.py
           if ($LASTEXITCODE -ne 0) { throw 'Native raster reader validation failed.' }
-          Get-Content .raster-bundle/third-party-licenses/gdal-ecw.txt
+          Get-Content .raster-bundle/native-validation.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

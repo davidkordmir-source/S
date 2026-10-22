@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 
-from . import raster_reader
+from . import ecw_reader, raster_reader
 from .errors import UserError
 
 register_heif_opener(thumbnails=False)
@@ -69,7 +69,7 @@ def format_support() -> dict:
     return dict(
         accept=",".join(extension for _, extensions in FORMAT_GROUPS for extension in extensions),
         groups=[dict(name=name, extensions=list(extensions)) for name, extensions in FORMAT_GROUPS],
-        ecw_available=raster_reader.available(),
+        ecw_available=ecw_reader.available(),
         multiple_frames="first",
         working_color="RGB8",
     )
@@ -79,8 +79,8 @@ def read_picture(data: bytes, *, scene: bool = False) -> Image.Image:
     if not data or len(data) > (MAX_SCENE_BYTES if scene else 15 * 1024 * 1024):
         raise UserError("حجم تصویر بیش از حد مجاز است.")
     maximum_pixels = MAX_PIXELS if scene else 16_000_000
-    if raster_reader.is_ecw(data):
-        return raster_reader.read_raster(data, maximum_pixels)
+    if ecw_reader.is_ecw(data):
+        return ecw_reader.read_ecw(data, maximum_pixels)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from offline_support import OfflineTestEngine
 from PIL import Image
 
-from atlas import raster_reader
+from atlas import ecw_reader
 from atlas.errors import UserError
 from atlas.image_io import format_support, read_picture
 from atlas.jobs import Job
@@ -74,8 +74,8 @@ def test_picker_manifest_and_ecw_detection():
     for suffix in (".ecw", ".jp2", ".heic", ".avif", ".psd", ".gif", ".img", ".ntf", ".pix"):
         assert suffix in formats["accept"].split(",")
     for name in ("jrc.ecw", "stefan_full_rgba_ecwv3_meta.ecw"):
-        assert raster_reader.is_ecw((DATA / "ecw" / name).read_bytes())
-    assert not raster_reader.is_ecw(b"not an ecw")
+        assert ecw_reader.is_ecw((DATA / "ecw" / name).read_bytes())
+    assert not ecw_reader.is_ecw(b"not an ecw")
 
 
 @pytest.mark.parametrize("label", (0, 1))
@@ -99,17 +99,19 @@ def test_upload_example_api_accepts_numeric_query_labels(tmp_path, label):
         )
 
 
-@pytest.mark.skipif(
-    not raster_reader.available(), reason="Actual ECW reader is bundled and tested on Windows"
-)
+@pytest.mark.skipif(not ecw_reader.available(), reason="Independent ECW reader is required")
 @pytest.mark.parametrize("name", ("jrc.ecw", "stefan_full_rgba_ecwv3_meta.ecw"))
 def test_actual_ecw_versions_import_and_obey_dimensions(tmp_path, name):
     data = (DATA / "ecw" / name).read_bytes()
     picture = read_picture(data, scene=True)
     assert picture.mode == "RGB" and min(picture.size) > 100
     assert np.asarray(picture).std() > 5
+    if name == "jrc.ecw":
+        red = np.asarray(picture)[:, :, 0]
+        # GDAL's reference SDK-v5 statistics for this upstream fixture.
+        assert abs(red.mean() - 141.606) < 0.5 and abs(red.std() - 67.2919) < 0.5
     with pytest.raises(UserError, match="ابعاد"):
-        raster_reader.read_raster(data, 100)
+        ecw_reader.read_ecw(data, 100)
     workspace = Workshop(tmp_path, OfflineTestEngine())
     scene = workspace.import_scene(data, name, Job("import"))["scene"]
     assert (scene["width"], scene["height"]) == picture.size

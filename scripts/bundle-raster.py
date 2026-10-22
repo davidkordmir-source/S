@@ -1,4 +1,4 @@
-"""Prepare a self-contained Windows GDAL + ECW reader from verified OSGeo4W packages.
+"""Prepare a self-contained Windows GDAL raster reader from verified OSGeo4W packages.
 
 This runs only at build time. No installers or package post-install scripts run.
 Original third-party license notices are included alongside the native tools.
@@ -84,7 +84,7 @@ def main():
         for dependency in packages[name].get("requires", "").split():
             require(dependency)
 
-    for name in ("gdal", "gdal-ecw"):
+    for name in ("gdal",):
         require(name)
     if output.exists():
         shutil.rmtree(output)
@@ -109,8 +109,6 @@ def main():
                 record["license_sha256"] = license_digest
             else:
                 (notices / f"{name}.txt").write_text(entry["license"], encoding="utf-8")
-        elif name == "gdal-ecw":
-            raise RuntimeError("The ECW redistribution license must accompany the reader")
         manifest["packages"][name] = record
     # Keep the Microsoft redistributable runtime alongside the native helper,
     # instead of relying on a system-wide VC++ installation on the user's PC.
@@ -141,42 +139,14 @@ def main():
     result = subprocess.run(
         [str(command), "--formats"], env=environment, capture_output=True, text=True, check=True
     )
-    if not re.search(r"^\s*ECW\s", result.stdout, re.MULTILINE):
-        raise RuntimeError("The actual GDAL binary does not expose the ECW reader")
-    reports = []
-    for name in ("jrc.ecw", "stefan_full_rgba_ecwv3_meta.ecw"):
-        source = Path("tests/data/ecw") / name
-        result = subprocess.run(
-            [str(command), "-json", str(source.resolve())],
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        data = json.loads(result.stdout)
-        assert data["driverShortName"] == "ECW" and min(data["size"]) > 0
-        target = cache / (name + ".png")
-        subprocess.run(
-            [
-                str(output / "bin/gdal_translate.exe"),
-                "-of",
-                "PNG",
-                "-ot",
-                "Byte",
-                "-b",
-                "1",
-                str(source.resolve()),
-                str(target),
-            ],
-            env=environment,
-            check=True,
-        )
-        assert target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-        reports.append(
-            dict(file=name, driver=data["driverShortName"], size=data["size"], bands=len(data["bands"]))
-        )
-    print("ECW v2/v3 native decode passed:", json.dumps(reports), flush=True)
-    (output / "native-validation.json").write_text(json.dumps(reports, indent=2))
+    for driver in ("GTiff", "HFA", "NITF", "PCIDSK"):
+        if not re.search(r"^\s*" + driver + r"\s", result.stdout, re.MULTILINE):
+            raise RuntimeError(f"The raster reader is missing {driver}")
+    if (output / "bin/NCSEcw.dll").exists() or list(output.rglob("*ECW*.dll")):
+        raise RuntimeError("Proprietary ECW SDK components must not be distributed")
+    report = dict(status="passed", drivers=["GTiff", "HFA", "NITF", "PCIDSK"], proprietary_ecw_sdk=False)
+    (output / "native-validation.json").write_text(json.dumps(report, indent=2))
+    print("Native open raster tools validated; ECW uses the independent MIT decoder.", flush=True)
 
 
 if __name__ == "__main__":

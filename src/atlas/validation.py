@@ -20,8 +20,11 @@ from .workshop import Workshop
 
 
 def validate_packaged_formats(root: Path) -> dict:
+    from importlib.metadata import distribution
+
+    from .ecw_reader import available
     from .image_io import read_picture
-    from .raster_reader import available
+    from .raster_reader import bundle_directory
 
     data = (
         Path(sys._MEIPASS) / "validation-data"
@@ -31,6 +34,9 @@ def validate_packaged_formats(root: Path) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     files = []
     with deny_external_network() as attempts:
+        assert "MIT License" in (distribution("ecw2tiff").read_text("licenses/LICENSE") or "")
+        assert not (bundle_directory() / "bin/NCSEcw.dll").exists()
+        assert not list(bundle_directory().rglob("*ECW*.dll"))
         for entry in json.loads((data / "formats/manifest.json").read_text()):
             logging.info("Checking image decoder: %s", entry["file"])
             image = read_picture((data / "formats" / entry["file"]).read_bytes(), scene=True)
@@ -38,10 +44,13 @@ def validate_packaged_formats(root: Path) -> dict:
             if entry["file"] != "alpha.png":
                 assert np.asarray(image).std() > 5, entry["file"]
             files.append(entry["file"])
-        assert available(), "The Windows package is missing its native ECW decoder"
+        assert available(), "The Windows package is missing its independent ECW decoder"
         for name in ("jrc.ecw", "stefan_full_rgba_ecwv3_meta.ecw"):
             image = read_picture((data / "ecw" / name).read_bytes(), scene=True)
             assert image.mode == "RGB" and min(image.size) > 100 and np.asarray(image).std() > 5
+            if name == "jrc.ecw":
+                red = np.asarray(image)[:, :, 0]
+                assert abs(red.mean() - 141.606) < 0.5 and abs(red.std() - 67.2919) < 0.5
             files.append(name)
         for name in json.loads((data / "rasters/source.json").read_text())["files"]:
             image = read_picture((data / "rasters" / name).read_bytes(), scene=True)
@@ -49,6 +58,8 @@ def validate_packaged_formats(root: Path) -> dict:
             files.append(name)
         assert not attempts
         report = dict(
+            ecw_decoder="ecw2tiff 0.1.1 (MIT)",
+            proprietary_ecw_sdk=False,
             status="passed",
             offline=True,
             external_python_connections=len(attempts),

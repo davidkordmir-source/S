@@ -1,4 +1,4 @@
-"""Offline access to the bundled native GDAL/ECW decoder on Windows."""
+"""Offline access to the bundled native GDAL raster decoder on Windows."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from PIL import Image
 
 from .errors import UserError
 
-DRIVERS = ("ECW", "GTiff", "HFA", "NITF", "JP2OpenJPEG", "JP2ECW", "PCIDSK")
+DRIVERS = ("GTiff", "HFA", "NITF", "JP2OpenJPEG", "PCIDSK")
 
 
 def bundle_directory() -> Path:
@@ -36,14 +36,10 @@ def available() -> bool:
     )
 
 
-def is_ecw(data: bytes) -> bool:
-    return data[:3] == b"\x65\x02\x01" or data[4:8] == b"ecw "
-
-
 def read_raster(data: bytes, maximum_pixels: int) -> Image.Image:
     if not available():
         raise UserError(
-            "خواندن ECW و رسترهای تخصصی به بستهٔ کامل نسخهٔ جدید ویندوز نیاز دارد؛ پوشهٔ raster را همراه برنامه نگه دارید."
+            "خواندن رسترهای تخصصی به بستهٔ کامل نسخهٔ جدید ویندوز نیاز دارد؛ پوشهٔ raster را همراه برنامه نگه دارید."
         )
     bundle = bundle_directory()
     environment = os.environ.copy()
@@ -56,7 +52,6 @@ def read_raster(data: bytes, maximum_pixels: int) -> Image.Image:
         GDAL_PAM_ENABLED="NO",
         GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
         GDAL_CACHEMAX="64",
-        ECW_CACHE_MAXMEM="67108864",
         GDAL_NUM_THREADS="2",
         GDAL_VRT_ENABLE_RAWRASTERBAND="NO",
     )
@@ -76,13 +71,13 @@ def read_raster(data: bytes, maximum_pixels: int) -> Image.Image:
                 result.stderr.decode("utf-8", errors="replace")[-3000:],
             )
             raise UserError(
-                "فایل رستری خوانده نشد؛ ممکن است ناقص باشد یا به فایل‌های همراه نیاز داشته باشد. ECW، GeoTIFF، JP2، IMG، NITF و PIX تک‌فایلی پشتیبانی می‌شوند."
+                "فایل رستری خوانده نشد؛ ممکن است ناقص باشد یا به فایل‌های همراه نیاز داشته باشد. GeoTIFF، JP2، IMG، NITF و PIX تک‌فایلی پشتیبانی می‌شوند."
             )
         return result.stdout
 
     try:
         with tempfile.TemporaryDirectory(prefix="atlas-raster-") as directory:
-            source = Path(directory) / ("source.ecw" if is_ecw(data) else "source.dat")
+            source = Path(directory) / "source.dat"
             source.write_bytes(data)
             allowed = [value for driver in DRIVERS for value in ("-if", driver)]
             information = json.loads(
