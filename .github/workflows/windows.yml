@@ -1,0 +1,40 @@
+name: Windows desktop build
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install, test, and package
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: Smoke test the packaged Windows application
+        shell: pwsh
+        env:
+          ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-smoke
+        run: |
+          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--smoke-test' -Wait -PassThru
+          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Packaged desktop smoke test failed.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AtlasScout-Windows-x64
+          path: dist/AtlasScout-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14

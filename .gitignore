@@ -1,0 +1,13 @@
+.venv/
+node_modules/
+ui/dist/
+build/
+dist/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+.atlas-data/
+test-results/
+*.log
