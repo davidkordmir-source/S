@@ -4,7 +4,8 @@ export type Concept = { id: string; name: string; positive: number; negative: nu
 export type Example = { id: string; scene: string | null; bbox: Rect | null; label: 0 | 1; image_url: string; width: number; height: number };
 export type Detection = { index: number; bbox: Rect; score: number };
 export type Scan = { run: string; scene: string; concept: string | null; revision: number | null; detections: Detection[]; message: string; settings: { windows: number; scope: Rect; width: number; height: number } };
-export type State = { version: string; offline: true; scenes: Scene[]; concepts: Concept[]; data_directory: string; models: { image_available: boolean; text_available: boolean; image_loaded: boolean; text_loaded: boolean } };
+export type ImageFormats = { accept: string; groups: {name: string; extensions: string[]}[]; ecw_available: boolean };
+export type State = { image_formats: ImageFormats; version: string; offline: true; scenes: Scene[]; concepts: Concept[]; data_directory: string; models: { image_available: boolean; text_available: boolean; image_loaded: boolean; text_loaded: boolean } };
 export type Job = { id: string; kind: string; status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'; progress: number; message: string; error?: string; result?: Omit<Partial<Scan>, 'scene' | 'concept'> & { scene?: Scene | string; concept?: string | null } };
 export const fa = (value: number, digits = 0) => new Intl.NumberFormat('fa-IR', { maximumFractionDigits: digits }).format(value);
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {

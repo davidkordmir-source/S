@@ -7,55 +7,25 @@ import math
 import sqlite3
 import time
 import uuid
-import warnings
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 import numpy as np
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageOps
 from scipy.special import expit
 from sklearn.linear_model import LogisticRegression
 
 from .config import INDEX_VERSION
 from .engine import Engine
 from .errors import UserError
+from .image_io import MAX_PIXELS, read_picture
+from .image_io import MAX_SCENE_BYTES as MAX_SCENE_BYTES
 from .jobs import Job
 
-MAX_SCENE_BYTES = 150 * 1024 * 1024
-MAX_PIXELS = 64_000_000
 MAX_WINDOWS = 5000
 MAX_EXAMPLES = 500
-
-
-def read_picture(data: bytes, *, scene: bool = False) -> Image.Image:
-    if not data or len(data) > (MAX_SCENE_BYTES if scene else 15 * 1024 * 1024):
-        raise UserError("حجم تصویر بیش از حد مجاز است.")
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(data)) as image:
-                if (
-                    image.width * image.height > (MAX_PIXELS if scene else 16_000_000)
-                    or max(image.size) > 16000
-                ):
-                    raise UserError(
-                        "تصویر بیش از حد بزرگ است. برای تصویر اصلی حداکثر ۶۴ میلیون پیکسل مجاز است."
-                    )
-                if getattr(image, "n_frames", 1) > 1 or image.mode not in ("RGB", "RGBA", "L", "P"):
-                    raise UserError(
-                        "یک تصویر RGB معمولی وارد کنید؛ TIFF چندصفحه‌ای، چندباندی و ۱۶بیتی پشتیبانی نمی‌شود."
-                    )
-                image.load()
-                return ImageOps.exif_transpose(image).convert("RGB")
-    except (
-        UnidentifiedImageError,
-        OSError,
-        Image.DecompressionBombWarning,
-        Image.DecompressionBombError,
-    ) as exc:
-        raise UserError("تصویر قابل خواندن نیست. از PNG، JPG یا TIFF با رنگ RGB استفاده کنید.") from exc
 
 
 def box_tuple(box: dict, width: int, height: int) -> tuple[int, int, int, int]:
@@ -153,7 +123,8 @@ class Workshop:
             )
         return {
             "scene": self.scene(identifier),
-            "message": "تصویر شما آماده است. حالا نمونه‌های هدف را مشخص کنید.",
+            "message": "تصویر شما آماده است. حالا نمونه‌های هدف را مشخص کنید. "
+            + " ".join(image.info.get("atlas_import_notes", [])),
         }
 
     def concepts(self) -> list[dict]:
@@ -267,7 +238,10 @@ class Workshop:
         picture = read_picture(data)
         if min(picture.size) < 8:
             raise UserError("نمونه باید حداقل ۸ در ۸ پیکسل باشد.")
-        return self._add_example(concept, picture, label)
+        return {
+            **self._add_example(concept, picture, label),
+            "notes": picture.info.get("atlas_import_notes", []),
+        }
 
     def delete_example(self, id: str) -> None:
         path = self.example_path(id)

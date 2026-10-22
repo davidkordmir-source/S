@@ -23,6 +23,11 @@ def main() -> None:
     parser.add_argument(
         "--ai-smoke-test", action="store_true", help="Validate real models and imagery, then exit"
     )
+    parser.add_argument(
+        "--formats-smoke-test",
+        action="store_true",
+        help="Validate bundled image decoders and actual ECW files, then exit",
+    )
     parser.add_argument("--port", type=int, default=0, help="Loopback port (default: choose an unused port)")
     args = parser.parse_args()
     root = data_directory()
@@ -34,6 +39,11 @@ def main() -> None:
         ],
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if args.formats_smoke_test:
+        from .validation import validate_packaged_formats
+
+        validate_packaged_formats(root)
+        return
     if args.ai_smoke_test:
         from .validation import validate_packaged_ai
 

@@ -17,7 +17,10 @@ if __name__ == "__main__":
         root.mkdir(parents=True, exist_ok=True)
         report = root / "startup-error.log"
         report.write_text(traceback.format_exc(), encoding="utf-8")
-        if not any(flag in sys.argv for flag in ("--smoke-test", "--ai-smoke-test")) and os.name == "nt":
+        if (
+            not any(flag in sys.argv for flag in ("--smoke-test", "--ai-smoke-test", "--formats-smoke-test"))
+            and os.name == "nt"
+        ):
             import ctypes
 
             ctypes.windll.user32.MessageBoxW(

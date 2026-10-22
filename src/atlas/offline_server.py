@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw
@@ -19,6 +19,7 @@ from . import __version__
 from .config import data_directory
 from .engine import Engine
 from .errors import UserError
+from .image_io import format_support
 from .jobs import Jobs
 from .workshop import MAX_SCENE_BYTES, Workshop
 
@@ -139,6 +140,7 @@ def create_app(
         return {
             "version": __version__,
             "offline": True,
+            "image_formats": format_support(),
             "models": services.engine.status(),
             "scenes": services.workshop.scenes(),
             "concepts": services.workshop.concepts(),
@@ -176,7 +178,7 @@ def create_app(
         return services.workshop.add_box(body.concept, body.scene, body.bbox.model_dump(), body.label)
 
     @app.post("/api/workspace/concepts/{id}/examples")
-    async def add_example(id: str, request: Request, label: Literal[0, 1] = 1):
+    async def add_example(id: str, request: Request, label: int = Query(default=1, ge=0, le=1)):
         services.idle()
         data = await upload(request, 15 * 1024 * 1024)
         return services.workshop.add_file(id, data, label)

@@ -130,7 +130,49 @@ def main():
             page.keyboard.press("Escape")
             page.get_by_role("button", name="راهنما", exact=True).click()
             expect(page.get_by_role("heading", name="از نمونه تا نتیجه", exact=True)).to_be_visible()
+            page.get_by_text("فرمت‌های قابل خواندن", exact=True).click()
+            expect(page.locator(".format-grid")).to_contain_text("ECW")
             page.get_by_role("button", name="شروع می‌کنم", exact=True).click()
+            accepted = page.locator('input[type=file]:not([multiple])[accept^=".png"]').get_attribute(
+                "accept"
+            )
+            assert all(
+                extension in accepted.split(",") for extension in (".ecw", ".heic", ".jp2", ".avif", ".psd")
+            )
+            page.locator('input[type=file]:not([multiple])[accept^=".png"]').set_input_files(
+                {
+                    "name": "satellite.heic",
+                    "mimeType": "image/heic",
+                    "buffer": (ROOT / "tests/data/formats/basic.heic").read_bytes(),
+                }
+            )
+            expect(page.get_by_role("combobox", name="تصویر فعال")).to_have_value(
+                __import__("re").compile(".+")
+            )
+            expect(page.locator(".scene-full.loaded")).to_have_attribute(
+                "alt", "satellite.heic", timeout=15000
+            )
+            page.get_by_role("tab", name="با نمونه‌های من", exact=True).click()
+            page.locator(".collection-tabs").get_by_role("button", name="نمونه‌های آموزشی").click()
+            expect(page.get_by_role("button", name="فایل نمونهٔ درست", exact=True)).to_be_enabled()
+            page.locator("input[type=file][multiple]").set_input_files(
+                {
+                    "name": "sample.jp2",
+                    "mimeType": "image/jp2",
+                    "buffer": (ROOT / "tests/data/formats/basic.jp2").read_bytes(),
+                }
+            )
+            try:
+                expect(page.locator(".sample-card")).to_have_count(6, timeout=10000)
+            except AssertionError:
+                print("Image upload notice:", page.locator(".notice").all_text_contents())
+                print(
+                    "Image upload state:",
+                    page.evaluate(
+                        "fetch('/api/state').then(r=>r.json()).then(s=>s.concepts.map(c=>({id:c.id,positive:c.positive,negative:c.negative})))"
+                    ),
+                )
+                raise
             for width, height in [(1440, 1050), (1080, 800)]:
                 page.set_viewport_size({"width": width, "height": height})
                 assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")

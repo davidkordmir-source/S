@@ -4,6 +4,10 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 if (-not $SkipSetup) { & "$PSScriptRoot/setup-windows.ps1" }
 if (-not (Test-Path 'ui/dist/index.html')) { throw 'Build the UI before packaging.' }
+& '.venv/Scripts/python.exe' scripts/bundle-raster.py
+if ($LASTEXITCODE -ne 0) { throw 'Preparing the verified native ECW/raster decoder failed.' }
+& '.venv/Scripts/python.exe' -c "import logging; from pathlib import Path; from atlas.validation import validate_packaged_formats; logging.basicConfig(level=logging.INFO); validate_packaged_formats(Path('.raster-cache/validation'))"
+if ($LASTEXITCODE -ne 0) { throw 'Actual input image format validation failed before packaging.' }
 & '.venv/Scripts/python.exe' scripts/bundle-models.py
 if ($LASTEXITCODE -ne 0) { throw 'Preparing verified offline model files failed.' }
 & '.venv/Scripts/python.exe' -m pytest -q

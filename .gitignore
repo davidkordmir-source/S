@@ -13,3 +13,6 @@ test-results/
 *.log
 .model-bundle/
 .model-cache/
+
+.raster-bundle/
+.raster-cache/

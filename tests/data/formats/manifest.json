@@ -1,0 +1,234 @@
+[
+  {
+    "file": "basic.png",
+    "format": "PNG",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.jpg",
+    "format": "JPEG",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.webp",
+    "format": "WEBP",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.bmp",
+    "format": "BMP",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.dib",
+    "format": "DIB",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.tga",
+    "format": "TGA",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.pcx",
+    "format": "PCX",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.ppm",
+    "format": "PPM",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.sgi",
+    "format": "SGI",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.qoi",
+    "format": "QOI",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.avif",
+    "format": "AVIF",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.heic",
+    "format": "HEIF",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.jp2",
+    "format": "JPEG2000",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.j2k",
+    "format": "JPEG2000",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.gif",
+    "format": "GIF",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.tiff",
+    "format": "TIFF",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "camera-cmyk.jpg",
+    "format": "JPEG",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "alpha.png",
+    "format": "PNG",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.dds",
+    "format": "DDS",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.ico",
+    "format": "ICO",
+    "size": [
+      64,
+      64
+    ]
+  },
+  {
+    "file": "basic.icns",
+    "format": "ICNS",
+    "size": [
+      1024,
+      1024
+    ]
+  },
+  {
+    "file": "basic.pbm",
+    "format": "PPM",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.xbm",
+    "format": "XBM",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.pgm",
+    "format": "PPM",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "animated.gif",
+    "format": "GIF",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "multipage.tiff",
+    "format": "TIFF",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "gray16.tiff",
+    "format": "TIFF",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "merged.psd",
+    "format": "PSD",
+    "size": [
+      48,
+      32
+    ]
+  },
+  {
+    "file": "basic.xpm",
+    "format": "XPM",
+    "size": [
+      48,
+      32
+    ]
+  }
+]

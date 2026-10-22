@@ -1,0 +1,19 @@
+{
+  "repository": "OSGeo/gdal",
+  "revision": "2c7893c6203ce492a21aafe9ee7a2236b8af024a",
+  "license": "MIT (see ../ecw/GDAL-LICENSE.TXT)",
+  "files": {
+    "small1bit.img": {
+      "path": "autotest/gdrivers/data/hfa/small1bit.img",
+      "sha256": "dc0049e6c0e59e908463003cca156a8f5426afbbc40feb50e9c25250bb268c4b"
+    },
+    "utm.pix": {
+      "path": "autotest/gdrivers/data/pcidsk/utm.pix",
+      "sha256": "1a2828657f43dff0a69308bb4f370701490257a4065f6ce30e000ec40e665a08"
+    },
+    "i_3034c.ntf": {
+      "path": "autotest/gdrivers/data/nitf/i_3034c.ntf",
+      "sha256": "8f4862b01d5ff063b12e0cf5695fbf0142f3945f8402e90931df45ccb1cafe52"
+    }
+  }
+}

@@ -5,6 +5,7 @@ import ipaddress
 import json
 import logging
 import socket
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,6 +17,47 @@ from scipy.special import expit
 from .engine import Engine
 from .jobs import Job
 from .workshop import Workshop
+
+
+def validate_packaged_formats(root: Path) -> dict:
+    from .image_io import read_picture
+    from .raster_reader import available
+
+    data = (
+        Path(sys._MEIPASS) / "validation-data"
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parents[2] / "tests/data"
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    files = []
+    with deny_external_network() as attempts:
+        for entry in json.loads((data / "formats/manifest.json").read_text()):
+            logging.info("Checking image decoder: %s", entry["file"])
+            image = read_picture((data / "formats" / entry["file"]).read_bytes(), scene=True)
+            assert image.mode == "RGB" and image.size == tuple(entry["size"]), entry["file"]
+            if entry["file"] != "alpha.png":
+                assert np.asarray(image).std() > 5, entry["file"]
+            files.append(entry["file"])
+        assert available(), "The Windows package is missing its native ECW decoder"
+        for name in ("jrc.ecw", "stefan_full_rgba_ecwv3_meta.ecw"):
+            image = read_picture((data / "ecw" / name).read_bytes(), scene=True)
+            assert image.mode == "RGB" and min(image.size) > 100 and np.asarray(image).std() > 5
+            files.append(name)
+        for name in json.loads((data / "rasters/source.json").read_text())["files"]:
+            image = read_picture((data / "rasters" / name).read_bytes(), scene=True)
+            assert image.mode == "RGB" and min(image.size) > 0 and np.asarray(image).size > 0
+            files.append(name)
+        assert not attempts
+        report = dict(
+            status="passed",
+            offline=True,
+            external_python_connections=len(attempts),
+            files=files,
+            ecw_versions=[2, 3],
+        )
+    (root / "formats-smoke.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    logging.info("Packaged image format validation passed: %s", report)
+    return report
 
 
 @contextmanager

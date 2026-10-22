@@ -1,19 +1,24 @@
 # Run on Windows: python -m PyInstaller --noconfirm AtlasScout.spec
 # Both pinned model snapshots are included. Runtime never downloads weights.
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata, collect_dynamic_libs
 
 root = Path(SPECPATH)
 datas = [(str(root / "ui/dist"), "ui")]
 if not (root / '.model-bundle/manifest.json').is_file():
     raise RuntimeError('Run scripts/bundle-models.py before packaging the offline application')
 datas += [(str(root / '.model-bundle'), 'models')]
+if not (root / ".raster-bundle/native-validation.json").is_file():
+    raise RuntimeError("Run scripts/bundle-raster.py and validate the ECW reader before packaging")
+datas += [(str(root / ".raster-bundle"), "raster"), (str(root / "tests/data"), "validation-data")]
+binaries = collect_dynamic_libs("pillow_heif")
 for package in ("sentence_transformers", "transformers", "certifi", "tokenizers"):
     datas += collect_data_files(package)
 for distribution in ("sentence-transformers", "transformers", "torch", "scikit-learn", "huggingface-hub"):
     datas += copy_metadata(distribution)
 
 hiddenimports = collect_submodules("sentence_transformers") + [
+    "pillow_heif", "_pillow_heif",
     "transformers.models.clip.modeling_clip",
     "transformers.models.clip.processing_clip",
     "transformers.models.clip.image_processing_clip",
@@ -30,7 +35,7 @@ hiddenimports = collect_submodules("sentence_transformers") + [
 ]
 
 a = Analysis([str(root / "scripts/desktop-entry.py")], pathex=[str(root / "src")],
-             datas=datas, hiddenimports=hiddenimports,
+             datas=datas, binaries=binaries, hiddenimports=hiddenimports,
              excludes=["tkinter", "tensorflow", "jax", "IPython", "matplotlib"],
              noarchive=False)
 pyz = PYZ(a.pure)

@@ -30,6 +30,15 @@ jobs:
         run: |
           Start-Transcript -Path build.log
           try { ./scripts/build-windows.ps1 } finally { Stop-Transcript }
+      - name: Test actual image decoders and ECW v2/v3 in the executable
+        shell: pwsh
+        env:
+          ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-formats-smoke
+        run: |
+          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--formats-smoke-test' -PassThru
+          if (-not $ApplicationProcess.WaitForExit(180000)) { $ApplicationProcess.Kill(); throw 'Image format smoke timed out.' }
+          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Packaged image decoder smoke failed.' }
+          Get-Content "$env:ATLAS_DATA_DIR/formats-smoke.json"
       - name: Smoke test packaged Windows application
         shell: pwsh
         env:
@@ -61,6 +70,7 @@ jobs:
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
       - name: Build diagnostics
         if: always()
         shell: pwsh
@@ -71,7 +81,7 @@ jobs:
             Get-Content build.log -Tail 120 >> $env:GITHUB_STEP_SUMMARY
             '```' >> $env:GITHUB_STEP_SUMMARY
           }
-          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
+          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
             if (Test-Path $LogPath) {
               "### $([IO.Path]::GetFileName($LogPath))" >> $env:GITHUB_STEP_SUMMARY
               '```text' >> $env:GITHUB_STEP_SUMMARY
@@ -85,6 +95,7 @@ jobs:
           name: windows-build-diagnostics
           path: |
             build.log
+            ${{ runner.temp }}/atlas-formats-smoke/*.log
             ${{ runner.temp }}/atlas-smoke/*.log
             ${{ runner.temp }}/atlas-ai-smoke/*.log
   publish:
@@ -103,7 +114,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
-          RELEASE_TAG: atlas-v0.2.0-offline.${{ github.run_number }}
+          RELEASE_TAG: atlas-v0.2.1-offline.${{ github.run_number }}
         shell: bash
         run: |
           cat > release-notes.md <<'NOTES'
@@ -111,6 +122,6 @@ jobs:
 
           Import your satellite image, draw positive and negative examples, train a local classifier and find similar regions in that image. Save/import training packs, refine with feedback, and export annotated PNG or pixel-coordinate CSV. Persian/English text search is also local.
 
-          The executable passed a native desktop check and actual bundled-model training, held-out image search, feedback/retraining, training-pack roundtrip and Persian/English inference with external socket connections blocked. This functional check uses controlled fixtures; satellite detection accuracy has not been benchmarked. Scores are not calibrated probabilities. RGB PNG/JPG/TIFF, up to 64 million pixels; multispectral/16-bit imagery and geographic coordinate export are not supported.
+          The executable passed real image-decoder and ECW v2/v3 checks, a native desktop check and actual bundled-model training, held-out image search, feedback/retraining, training-pack roundtrip and Persian/English inference with external socket connections blocked. This functional check uses controlled fixtures; satellite detection accuracy has not been benchmarked. Scores are not calibrated probabilities. RGB PNG/JPG/TIFF, up to 64 million pixels; ECW v2/v3, GeoTIFF, JPEG 2000, HEIC/HEIF, AVIF, GIF and many other image formats have bundled offline readers. Multi-page/animated inputs use the first frame; high-bit/multiband rasters are converted to RGB8 for search. Geographic coordinate export is not supported.
           NOTES
           gh release create "$RELEASE_TAG" package/AtlasScout-Offline-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout Offline — Windows, train with your examples' --notes-file release-notes.md
