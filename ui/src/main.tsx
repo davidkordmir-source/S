@@ -1,160 +1,116 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowDownToLine, ArrowLeft, ArrowUpLeft, Bookmark, Check, ChevronLeft, CircleHelp, Copy, Database, Download, FileImage, Focus, ImagePlus, Layers, LoaderCircle, MapPin, ScanLine, Search, Settings2, ShieldCheck, Sparkles, Square, Type, Upload, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, BookOpen, BrainCircuit, Check, CheckCheck, ChevronLeft, CircleHelp, Database, FolderInput, ImagePlus, Layers, LoaderCircle, Plus, ScanLine, Search, Settings2, ShieldCheck, Square, SquareMinus, SquarePlus, Trash2, Type, X } from 'lucide-react';
 import '@fontsource/vazirmatn/400.css';
 import '@fontsource/vazirmatn/500.css';
 import '@fontsource/vazirmatn/600.css';
 import '@fontsource/vazirmatn/700.css';
-import ScoutMap from './Map';
-import { api, Building, fa, Job, post, State } from './api';
-import './style.css';
+import ImageCanvas, { Tool } from './ImageCanvas';
+import { api, download, Example, fa, Job, post, Rect, Scan, State } from './offline-api';
+import './offline.css';
 
-const EXAMPLES = ['ساختمان با سقف قرمز و حیاط بزرگ', 'بنای مستطیلی کنار آب', 'خانه با استخر در حیاط'];
-
+type Plan = { allowed: boolean; windows: number; scope: Rect };
 function App() {
   const [state, setState] = useState<State | null>(null);
-  const [tab, setTab] = useState<'search' | 'library'>('search');
-  const [mode, setMode] = useState<'text' | 'image'>('text');
-  const [query, setQuery] = useState('');
-  const [photo, setPhoto] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [center, setCenter] = useState<[number, number]>([52.3728, 4.8936]);
-  const [radius, setRadius] = useState(250);
-  const [areaOnly, setAreaOnly] = useState(true);
-  const [library, setLibrary] = useState<Building[]>([]);
-  const [results, setResults] = useState<Building[] | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [job, setJob] = useState<Job | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [sceneId, setSceneId] = useState(''), [conceptId, setConceptId] = useState('');
+  const [name, setName] = useState(''), [examples, setExamples] = useState<Example[]>([]);
+  const [tool, setTool] = useState<Tool>('pan');
+  const [mode, setMode] = useState<'learned' | 'text'>('learned'), [text, setText] = useState('');
+  const [scope, setScope] = useState<Rect | null>(null);
+  const [width, setWidth] = useState(96), [height, setHeight] = useState(96);
+  const [threshold, setThreshold] = useState(.65), [thorough, setThorough] = useState(false);
+  const [plan, setPlan] = useState<Plan | null>(null), [planError, setPlanError] = useState('');
+  const [scan, setScan] = useState<Scan | null>(null);
+  const [selected, setSelected] = useState<number | null>(null), [focus, setFocus] = useState<Rect | null>(null);
+  const [tab, setTab] = useState<'examples' | 'results'>('examples');
+  const [sampleLabel, setSampleLabel] = useState<0 | 1>(1);
+  const [feedback, setFeedback] = useState<Record<number, number>>({});
+  const [job, setJob] = useState<Job | null>(null), [submitting, setSubmitting] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
-  const [dialog, setDialog] = useState<'settings' | 'help' | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const imageInput = useRef<HTMLInputElement>(null);
-  const archiveInput = useRef<HTMLInputElement>(null);
+  const [dialog, setDialog] = useState<'help' | 'settings' | null>(null);
+  const sceneInput = useRef<HTMLInputElement>(null), sampleInput = useRef<HTMLInputElement>(null), trainingInput = useRef<HTMLInputElement>(null);
   const busy = submitting || job?.status === 'queued' || job?.status === 'running';
-  const visible = tab === 'library' ? library : results ?? library;
-  const chosen = visible.find(building => building.id === selected);
-  const indexed = state?.library.indexed ?? 0;
-  const total = state?.library.total ?? 0;
+  const scene = state?.scenes.find(item => item.id === sceneId) ?? null;
+  const concept = state?.concepts.find(item => item.id === conceptId);
+  const imageAvailable = !!state?.models.image_available;
+  const refresh = useCallback(async () => { const next = await api<State>('/state'); setState(next); return next; }, []);
+  const showError = (error: unknown) => setNotice({ text: (error as Error).message, error: true });
+  const loadExamples = async (id: string) => { if (!id) { setExamples([]); return; } const data = await api<{ examples: Example[] }>(`/workspace/concepts/${id}/examples`); setExamples(data.examples); };
+  useEffect(() => { refresh().catch(showError); }, [refresh]);
+  useEffect(() => { if (state && !sceneId && state.scenes.length) setSceneId(state.scenes[0].id); if (state && !conceptId && state.concepts.length) setConceptId(state.concepts[0].id); }, [state]);
+  useEffect(() => { let stopped = false; if (!conceptId) { setExamples([]); return; } api<{ examples: Example[] }>(`/workspace/concepts/${conceptId}/examples`).then(data => { if (!stopped) setExamples(data.examples); }).catch(showError); return () => { stopped = true; }; }, [conceptId]);
+  useEffect(() => { if (concept) { setWidth(Math.min(2048, Math.max(8, concept.window_width))); setHeight(Math.min(2048, Math.max(8, concept.window_height))); } }, [conceptId, concept?.trained_revision]);
+  useEffect(() => { setScope(null); setScan(null); setSelected(null); setFocus(null); setTool('pan'); }, [sceneId]);
+  useEffect(() => { setScan(null); setSelected(null); setFeedback({}); }, [conceptId, mode]);
 
-  const refresh = useCallback(async () => {
-    const [nextState, nextLibrary] = await Promise.all([api<State>('/state'), api<{ buildings: Building[] }>('/buildings')]);
-    setState(nextState); setLibrary(nextLibrary.buildings);
-  }, []);
-  useEffect(() => { refresh().catch(error => setNotice({ text: error.message, error: true })); }, [refresh]);
+  const settings = { scene: sceneId, concept: mode === 'learned' ? conceptId : null, text: mode === 'text' ? text.trim() : '', width, height, threshold, scope, thorough };
   useEffect(() => {
-    if (!photo) { setPreview(null); return; }
-    const url = URL.createObjectURL(photo); setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [photo]);
-
+    setPlan(null); setPlanError(''); if (!sceneId) return;
+    let stopped = false;
+    const timer = setTimeout(() => post<Plan>('/workspace/plan', { scene: sceneId, width, height, scope, thorough }).then(value => { if (!stopped) setPlan(value); }).catch(error => { if (!stopped) setPlanError(error.message); }), 300);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [sceneId, width, height, scope, thorough]);
   useEffect(() => {
     if (!job || !['queued', 'running'].includes(job.status)) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
+    let stopped = false; let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const next = await api<Job>(`/jobs/${job.id}`);
-        if (stopped) return;
-        setJob(next);
+        const next = await api<Job>(`/jobs/${job.id}`); if (stopped) return; setJob(next);
         if (next.status === 'done') {
-          if (next.result?.center) setCenter([next.result.center.lat, next.result.center.lon]);
-          if (next.result?.buildings) { setResults(next.result.buildings); setSelected(null); setTab('search'); }
-          else if (next.result?.message) setNotice({ text: next.result.message + (next.result.provider_capped ? ' سرویس حداکثر هزار ردپای ساختمان را بررسی کرده است.' : '') });
-          await refresh();
+          const result = next.result;
+          if (result?.scene && typeof result.scene === 'object') setSceneId(result.scene.id);
+          if (result?.concept && next.kind === 'import-training') { setConceptId(result.concept); setTab('examples'); }
+          if (result?.run) { setScan(result as Scan); setSelected(null); setFeedback({}); setTab('results'); setTool('pan'); }
+          if (result?.message) setNotice({ text: result.message });
+          await refresh(); if (conceptId) await loadExamples(conceptId);
         } else if (next.status === 'failed') setNotice({ text: next.error || 'عملیات کامل نشد.', error: true });
-        else if (next.status === 'cancelled') { setNotice({ text: 'عملیات لغو شد؛ مراحل تکمیل‌شده در کتابخانه باقی می‌مانند.' }); await refresh(); }
-        else timer = setTimeout(poll, 900);
-      } catch (error) {
-        if (!stopped) { setNotice({ text: (error as Error).message, error: true }); setJob(current => current ? { ...current, status: 'failed' } : null); }
-      }
+        else if (next.status === 'cancelled') { setNotice({ text: 'عملیات متوقف شد. نمونه‌های ذخیره‌شده باقی می‌مانند.' }); await refresh(); }
+        else timer = setTimeout(poll, 700);
+      } catch (error) { if (!stopped) { showError(error); setJob(current => current ? { ...current, status: 'failed' } : null); } }
     };
-    timer = setTimeout(poll, 400);
-    return () => { stopped = true; clearTimeout(timer); };
-  }, [job?.id, job?.status === 'queued' || job?.status === 'running', refresh]);
+    timer = setTimeout(poll, 300); return () => { stopped = true; clearTimeout(timer); };
+  }, [job?.id, job?.status === 'queued' || job?.status === 'running', conceptId, refresh]);
+  useEffect(() => { if (!dialog) return; const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setDialog(null); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [dialog]);
 
-  useEffect(() => {
-    if (!dialog) return;
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setDialog(null); };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [dialog]);
-
-  const start = async (request: () => Promise<Job>) => {
-    if (busy) return;
-    setSubmitting(true); setNotice(null);
-    try { setJob(await request()); } catch (error) { setNotice({ text: (error as Error).message, error: true }); }
-    finally { setSubmitting(false); }
-  };
-  const pickPhoto = (file?: File) => {
-    if (!file) return;
-    if (!['image/jpeg', 'image/png', 'image/webp', 'image/bmp'].includes(file.type) || file.size > 15 * 1024 * 1024) {
-      setNotice({ text: 'یک تصویر JPG، PNG یا WEBP با حجم کمتر از ۱۵ مگابایت انتخاب کنید.', error: true }); return;
-    }
-    setPhoto(file); setMode('image'); setResults(null);
-  };
-  const search = () => start(() => mode === 'text' ? post<Job>('/search/text', { text: query.trim(), limit: 12, area: areaOnly ? { lat: center[0], lon: center[1], radius } : null }) : api<Job>(`/search/image${areaOnly ? `?lat=${center[0]}&lon=${center[1]}&radius=${radius}` : ''}`, { method: 'POST', headers: { 'Content-Type': photo!.type }, body: photo }));
-  const importZip = (file?: File) => {
-    if (!file) return;
-    if (file.size > 80 * 1024 * 1024) { setNotice({ text: 'حجم فایل ZIP باید کمتر از ۸۰ مگابایت باشد.', error: true }); return; }
-    start(() => api<Job>('/import', { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: file }));
-  };
-  const downloadResults = () => {
-    const file = { type: 'FeatureCollection', features: visible.map(item => ({ type: 'Feature', geometry: item.geometry ?? { type: 'Point', coordinates: [item.lon, item.lat] }, properties: { id: item.id, title: item.title, source: item.source, cosine_similarity: item.score ?? null } })) };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: 'application/geo+json' }));
-    const link = document.createElement('a'); link.href = url; link.download = 'atlas-results.geojson'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  };
-  const selectBuilding = useCallback((id: string) => setSelected(id), []);
+  const start = async (request: () => Promise<Job>) => { if (busy) return; setSubmitting(true); setNotice(null); try { setJob(await request()); } catch (error) { showError(error); } finally { setSubmitting(false); } };
+  const mutate = async (request: () => Promise<unknown>, message?: string) => { if (busy) return; setSubmitting(true); try { await request(); await refresh(); await loadExamples(conceptId); if (message) setNotice({ text: message }); } catch (error) { showError(error); } finally { setSubmitting(false); } };
+  const importScene = (file?: File) => { if (!file) return; if (file.size > 150*1024*1024) { setNotice({ text: 'حجم تصویر باید حداکثر ۱۵۰ مگابایت باشد.', error: true }); return; } start(() => api<Job>(`/workspace/scenes?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })); };
+  const addConcept = async () => { if (!name.trim() || busy) return; setSubmitting(true); try { const item = await post<{ id: string }>('/workspace/concepts', { name: name.trim() }); setConceptId(item.id); setName(''); setTab('examples'); await refresh(); setNotice({ text: 'هدف ساخته شد. ابزار سبز را انتخاب کن و دور نمونه‌های درست کادر بکش.' }); } catch (error) { showError(error); } finally { setSubmitting(false); } };
+  const onBox = (box: Rect) => { if (tool === 'scope') { setScope(box); setTool('pan'); return; } if (!conceptId) return; mutate(() => post('/workspace/annotations', { concept: conceptId, scene: sceneId, bbox: box, label: tool === 'positive' ? 1 : 0 }), 'نمونه ذخیره شد. برای اعمال نمونه‌های جدید، آموزش را اجرا کن.'); setTab('examples'); };
+  const uploadExamples = async (files: FileList | null) => { if (!files?.length || busy || !conceptId) return; setSubmitting(true); try { for (const file of Array.from(files)) await api(`/workspace/concepts/${conceptId}/examples?label=${sampleLabel}`, { method: 'POST', body: file }); setNotice({ text: 'نمونه‌ها اضافه شدند؛ حالا آموزش را اجرا کن.' }); } catch (error) { showError(error); } finally { await refresh(); await loadExamples(conceptId); setSubmitting(false); } };
+  const selectResult = (index: number) => { setSelected(index); const entry = scan?.detections.find(item => item.index === index); if (entry) setFocus({ ...entry.bbox }); };
+  const markResult = async (index: number, label: 0 | 1) => { if (!scan || !conceptId) return; await mutate(async () => { await post(`/workspace/runs/${scan.run}/feedback/${index}`, { concept: conceptId, label }); setFeedback(current => ({ ...current, [index]: label })); }, 'بازخورد به نمونه‌ها اضافه شد. دوباره آموزش بده و جست‌وجو را اجرا کن.'); };
+  const save = (path: string, filename: string) => download(path, filename).catch(showError);
+  const searchReady = !!scene && imageAvailable && !!plan?.allowed && (mode === 'learned' ? !!concept?.ready : text.trim().length >= 3 && !!state?.models.text_available);
 
   return <div className="app-shell">
-    <header className="header">
-      <a href="#" className="brand" onClick={event => { event.preventDefault(); setTab('search'); }}><span className="brand-symbol"><ScanLine size={25} strokeWidth={1.5} /></span><div><strong>اطلس<span>SCOUT</span></strong><small>ردِ ساختمان‌ها را پیدا کن</small></div></a>
-      <nav className="navigation" aria-label="بخش‌های برنامه"><button className={tab === 'search' ? 'active' : ''} onClick={() => setTab('search')}><Search size={17} />جست‌وجو</button><button className={tab === 'library' ? 'active' : ''} onClick={() => setTab('library')}><Layers size={17} />کتابخانه<span className="nav-count">{fa(total)}</span></button></nav>
-      <div className="header-actions"><span className="desktop-label"><span />نسخهٔ دسکتاپ</span><button className="icon-button" title="راهنما" aria-label="راهنما" onClick={() => setDialog('help')}><CircleHelp size={19} /></button><button className="icon-button" title="تنظیمات" aria-label="تنظیمات" onClick={() => setDialog('settings')}><Settings2 size={19} /></button></div>
-    </header>
-
+    <header className="app-header"><a href="#" className="brand" onClick={event => { event.preventDefault(); setDialog('help'); }}><span className="brand-mark"><ScanLine size={25} /></span><div><strong>اطلس <em>SCOUT</em></strong><small>کارگاه جست‌وجوی تصویری</small></div></a><div className="workspace-name"><span />فضای کار محلی<ChevronLeft size={13} /><b>تصویر · آموزش · جست‌وجو</b></div><div className="header-actions"><span className="offline-badge"><ShieldCheck size={15} />کاملاً آفلاین</span><button className="icon-button" aria-label="راهنما" title="راهنما" onClick={() => setDialog('help')}><CircleHelp size={19} /></button><button className="icon-button" aria-label="تنظیمات" title="تنظیمات" onClick={() => setDialog('settings')}><Settings2 size={19} /></button></div></header>
     <div className="workspace">
-      <aside className="sidebar">
-        <div className="sidebar-scroll">
-          <div className="eyebrow"><span />EXPLORER / 01</div>
-          <h1>هر ساختمان،<br />یک نشانه دارد<span>.</span></h1>
-          <p className="intro">عکس بده یا توصیف کن؛ ساختمان‌های مشابه را روی نقشه پیدا کن.</p>
-          <div className="mode-switch" role="tablist" aria-label="روش جست‌وجو"><button role="tab" aria-selected={mode === 'text'} className={mode === 'text' ? 'active' : ''} onClick={() => setMode('text')}><Type size={17} />با توضیح</button><button role="tab" aria-selected={mode === 'image'} className={mode === 'image' ? 'active' : ''} onClick={() => setMode('image')}><FileImage size={17} />با تصویر</button></div>
-
-          {mode === 'text' ? <div className="query-section"><label htmlFor="building-description">دنبال چه ساختمانی می‌گردی؟<span>فارسی یا انگلیسی</span></label><div className="textarea-wrap"><textarea id="building-description" value={query} maxLength={500} onChange={event => setQuery(event.target.value)} placeholder="مثلاً یک ساختمان با سقف قرمز، حیاط بزرگ و استخر مستطیلی..." /><span className="character-count">{fa(query.length)} / ۵۰۰</span><Sparkles size={15} /></div><p className="field-hint">رنگ و شکل سقف، محوطه و ساختمان‌های اطراف را توصیف کن.</p><div className="examples"><span>برای شروع</span>{EXAMPLES.map(example => <button key={example} onClick={() => setQuery(example)}>{example}<ArrowUpLeft size={13} /></button>)}</div></div>
-          : <div className="query-section"><label>تصویر مرجع<span>حداکثر ۱۵ مگابایت</span></label><div className={`image-drop ${dragging ? 'dragging' : ''} ${preview ? 'has-image' : ''}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); setDragging(false); pickPhoto(event.dataTransfer.files[0]); }}>
-              {preview ? <><img src={preview} alt="تصویر مرجع انتخاب‌شده" /><button className="remove-photo" aria-label="حذف تصویر" onClick={() => setPhoto(null)}><X size={16} /></button><button className="replace-photo" onClick={() => imageInput.current?.click()}>تغییر تصویر</button></> : <button className="drop-trigger" onClick={() => imageInput.current?.click()}><span><ImagePlus size={27} strokeWidth={1.4} /></span><strong>عکس را اینجا رها کن</strong><small>یا برای انتخاب فایل کلیک کن</small><b>JPG · PNG · WEBP</b></button>}
-            </div><p className="field-hint">تصویر از بالا بهترین نتیجه را می‌دهد. عکسِ نما ممکن است با سقف ساختمان تطبیق نداشته باشد.</p></div>}
-          <input hidden type="file" accept="image/jpeg,image/png,image/webp,image/bmp" ref={imageInput} onChange={event => { pickPhoto(event.target.files?.[0]); event.target.value = ''; }} />
-
-          <div className="section-divider" />
-          <section className="area-section"><div className="section-title"><span><Focus size={17} />محدودهٔ جست‌وجو</span><span className="small-badge">نسخهٔ اول · هلند</span></div><div className="area-name"><span className="location-icon"><MapPin size={18} /></span><div><strong>محدودهٔ انتخابی روی نقشه</strong><small dir="ltr">{center[0].toFixed(4)}, {center[1].toFixed(4)}</small></div><button title="انتخاب آمستردام" aria-label="انتخاب آمستردام" onClick={() => { setCenter([52.3728, 4.8936]); setSelected(null); }}><Focus size={17} /></button></div><label className="radius-label" htmlFor="radius"><span>شعاع بررسی</span><strong>{fa(radius)} <small>متر</small></strong></label><input id="radius" aria-label="شعاع بررسی" type="range" min="100" max="600" step="50" value={radius} onChange={event => setRadius(Number(event.target.value))} /><div className="range-labels"><span>۱۰۰ متر</span><span>۶۰۰ متر</span></div><button className="secondary-button prepare-button" disabled={busy || !state} onClick={() => start(() => post<Job>('/area', { lat: center[0], lon: center[1], radius, limit: 30 }))}><Download size={15} />دریافت حداکثر ۳۰ تصویر از محدوده<ChevronLeft size={15} /></button></section>
-          <label className="scope-checkbox"><input type="checkbox" checked={areaOnly} onChange={event => setAreaOnly(event.target.checked)} />جست‌وجو فقط در محدودهٔ انتخابی</label><div className="index-line"><Database size={15} /><span>{fa(indexed)} از {fa(total)} تصویر نمایه شده</span><button disabled={busy || !total || indexed === total} onClick={() => start(() => post<Job>('/index'))}>ساخت نمایه<ArrowLeft size={13} /></button></div>
-        </div>
-        <div className="search-footer"><button className="search-button" disabled={busy || !indexed || (mode === 'text' ? query.trim().length < 2 : !photo)} onClick={search}>{busy ? <LoaderCircle className="spin" size={20} /> : <Search size={20} />}<span>{busy ? 'در حال پردازش' : 'پیدا کردن ساختمان‌ها'}</span><ArrowLeft size={20} /></button><p><ShieldCheck size={13} />پردازش هوش مصنوعی روی کامپیوتر شما</p></div>
-      </aside>
-
-      <main className="main-content">
-        <div className="page-heading"><div><div className="breadcrumb">فضای جست‌وجو <ChevronLeft size={12} /> {tab === 'library' ? 'کتابخانهٔ محلی' : 'کاوش تصویری'}</div><h2>{tab === 'library' ? 'کتابخانهٔ ساختمان‌ها' : 'از یک نشانه، به یک مکان'}<span className="beta-tag">نسخهٔ اولیه</span></h2></div><div className="library-status"><span className={indexed ? 'ready' : ''} />{indexed ? `${fa(indexed)} تصویر آمادهٔ جست‌وجو` : 'کتابخانه هنوز آماده نیست'}</div></div>
-        {notice && <div className={`notice ${notice.error ? 'error' : ''}`} role={notice.error ? 'alert' : 'status'}><span>{notice.error ? <CircleHelp size={17} /> : <Check size={17} />}{notice.text}</span><button aria-label="بستن پیام" onClick={() => setNotice(null)}><X size={16} /></button></div>}
-        {busy && job && <div className="job-panel" role="status"><LoaderCircle className="spin" size={18} /><div><span>{job.message}</span><div className="progress-track"><span style={{ width: `${job.progress}%` }} /></div></div><span>{fa(job.progress)}٪</span><button title="لغو عملیات" aria-label="لغو عملیات" onClick={() => post(`/jobs/${job.id}/cancel`).then(() => setNotice({ text: 'درخواست لغو ثبت شد. مرحلهٔ جاری ممکن است کمی زمان ببرد.' })).catch(error => setNotice({ text: error.message, error: true }))}><Square size={14} /></button></div>}
-
-        <div className="map-container"><ScoutMap center={center} radius={radius} buildings={visible} selected={selected} onCenter={setCenter} onSelect={selectBuilding} />{chosen && <div className="selected-building"><img src={chosen.image_url} alt="تصویر ساختمان انتخاب‌شده" /><div><strong>{chosen.title}</strong><span dir="ltr">{chosen.lat.toFixed(6)}, {chosen.lon.toFixed(6)}</span></div><button title="کپی مختصات" aria-label="کپی مختصات" onClick={() => navigator.clipboard.writeText(`${chosen.lat}, ${chosen.lon}`).then(() => setNotice({ text: 'مختصات کپی شد.' })).catch(() => setNotice({ text: 'کپی مختصات ممکن نشد.', error: true }))}><Copy size={16} /></button><button title="بستن جزئیات" aria-label="بستن جزئیات" onClick={() => setSelected(null)}><X size={16} /></button></div>}</div>
-
-        <section className="results-section"><div className="results-heading"><div><span className="results-icon">{tab === 'library' ? <Layers size={18} /> : <ScanLine size={18} />}</span><h3>{tab === 'library' ? 'تصاویر ذخیره‌شده' : results ? 'ساختمان‌های مشابه' : 'نتایج جست‌وجو'}</h3><span className="count-tag">{fa(tab === 'library' || results ? visible.length : 0)}</span></div><div className="results-actions">{results && tab === 'search' && <button onClick={() => { setResults(null); setSelected(null); }}>پاک‌کردن نتایج</button>}<button disabled={!visible.length} onClick={downloadResults}><ArrowDownToLine size={15} />خروجی GeoJSON</button></div></div>
-          {(tab === 'library' ? library.length > 0 : results !== null && results.length > 0) ? <><div className="results-grid">{visible.map((building, index) => <button className={`result-card ${selected === building.id ? 'selected' : ''}`} key={building.id} onClick={() => setSelected(building.id)}><div className="result-picture"><img src={building.image_url} alt={building.title} loading="lazy" /><span className="result-number">{fa(index + 1)}</span>{building.score !== undefined && <span className="score"><Sparkles size={11} />{fa(building.score, 3)} <small>شباهت</small></span>}<span className="view-location"><MapPin size={14} />نمایش روی نقشه</span></div><div className="result-info"><strong>{building.title}</strong><span><MapPin size={11} /><b dir="ltr">{building.lat.toFixed(4)}, {building.lon.toFixed(4)}</b><ArrowUpLeft size={14} /></span></div></button>)}</div>{results && tab === 'search' && <p className="results-disclaimer">امتیاز، شباهت برداری است؛ احتمال صحت یا تأیید هویت ساختمان نیست. نتایج فقط در تصاویر نمایه‌شده جست‌وجو شده‌اند.</p>}</>
-          : <div className="empty-state"><div className="empty-art"><div className="scan-corner top-right" /><div className="scan-corner bottom-left" /><svg width="90" height="76" viewBox="0 0 90 76" fill="none" aria-hidden="true"><path d="M15 57 44 73 77 55 47 39 15 57Z" stroke="currentColor" strokeDasharray="3 3" opacity=".4"/><path d="m26 48 19 11 23-13V24L46 12 26 24v24Z" fill="#25372b" stroke="currentColor" strokeWidth="1.2"/><path d="m26 24 19 11 23-11M45 35v24M35 20l21 11M35 30v22M56 29v24" stroke="currentColor" strokeWidth="1.2"/><path d="m18 21 28-16 30 17" stroke="currentColor" opacity=".5"/><path d="M17 35v12M74 32v12" stroke="currentColor" strokeDasharray="3 3" opacity=".5"/></svg><span className="scan-line" /></div><div><h4>{tab === 'library' ? 'کتابخانه‌ات را بساز' : !total ? 'اولین کشف از اینجا شروع می‌شود' : !indexed ? 'یک قدم تا اولین جست‌وجو' : 'حالا نشانه‌ات را وارد کن'}</h4><p>{tab === 'library' || !total ? 'تصاویر محدوده را دریافت کن یا یک مجموعهٔ دارای مختصات وارد کن.' : !indexed ? 'برای مقایسهٔ تصاویر، دکمهٔ «ساخت نمایه» را بزن.' : 'ساختمان را توصیف کن یا عکسش را بده و جست‌وجو را شروع کن.'}</p><button className="import-link" disabled={busy} onClick={() => archiveInput.current?.click()}><Upload size={14} />واردکردن مجموعه تصاویر<ArrowLeft size={14} /></button></div></div>}
+      <aside className="sidebar"><div className="sidebar-scroll"><div className="eyebrow"><span />YOUR IMAGE. YOUR TARGET.</div><h1>یاد بده،<br />روی تصویر پیدا کن<span>.</span></h1><p className="intro">نمونه‌ها را تو مشخص می‌کنی؛ هوش مصنوعی تصویرت را جست‌وجو می‌کند.</p>
+        <section className="step-section"><div className="step-heading"><span className={scene ? 'step-number complete' : 'step-number'}>{scene ? <Check size={13} /> : '۱'}</span><h2>تصویر ماهواره‌ای</h2><span className="step-meta">از کامپیوتر شما</span></div><button className="image-import" disabled={busy} onClick={() => sceneInput.current?.click()}><ImagePlus size={21} /><span><strong>{scene ? 'واردکردن تصویر دیگر' : 'انتخاب تصویر'}</strong><small>PNG، JPG یا TIFF با رنگ RGB</small></span><Plus size={17} /></button>{!!state?.scenes.length && <label className="field-label">تصویر فعال<select aria-label="تصویر فعال" value={sceneId} disabled={busy} onChange={event => setSceneId(event.target.value)}>{state.scenes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}<p className="hint">حداکثر ۱۵۰ مگابایت و ۶۴ میلیون پیکسل. جست‌وجو روی همین فایل انجام می‌شود.</p></section>
+        <section className="step-section"><div className="step-heading"><span className={concept?.ready ? 'step-number complete' : 'step-number'}>{concept?.ready ? <Check size={13} /> : '۲'}</span><h2>به برنامه یاد بده</h2></div><div className="mode-switch" role="tablist" aria-label="روش جست‌وجو"><button role="tab" aria-selected={mode === 'learned'} className={mode === 'learned' ? 'active' : ''} onClick={() => setMode('learned')}><BrainCircuit size={16} />با نمونه‌های من</button><button role="tab" aria-selected={mode === 'text'} className={mode === 'text' ? 'active' : ''} onClick={() => setMode('text')}><Type size={16} />با توضیح</button></div>
+          {mode === 'learned' ? <>{!!state?.concepts.length && <label className="field-label">هدف آموزشی<select aria-label="هدف آموزشی" value={conceptId} disabled={busy} onChange={event => setConceptId(event.target.value)}>{state.concepts.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}<form className="new-concept" onSubmit={event => { event.preventDefault(); addConcept(); }}><input aria-label="نام هدف جدید" maxLength={100} placeholder="مثلاً: ساختمان با سقف قرمز" value={name} onChange={event => setName(event.target.value)} /><button title="ساخت هدف" aria-label="ساخت هدف" disabled={busy || !name.trim()}><Plus size={18} /></button></form>
+          {concept ? <><div className="sample-counters"><button className="positive" disabled={!scene || busy} onClick={() => { setTool('positive'); setTab('examples'); }}><SquarePlus size={19} /><strong>{fa(concept.positive)}</strong><span>نمونهٔ درست</span><small>می‌خواهم</small></button><button className="negative" disabled={!scene || busy} onClick={() => { setTool('negative'); setTab('examples'); }}><SquareMinus size={19} /><strong>{fa(concept.negative)}</strong><span>نمونهٔ غلط</span><small>نمی‌خواهم</small></button></div><p className="hint">ابزار سبز یا قرمز را بزن و روی تصویر کادر بکش. حداقل ۲ نمونه از هر نوع لازم است؛ ۵ تا ۲۰ نمونهٔ متنوع بهتر است.</p><button className="train-button" disabled={busy || !imageAvailable || concept.positive < 2 || concept.negative < 2} onClick={() => start(() => post<Job>(`/workspace/concepts/${conceptId}/train`))}>{concept.ready ? <CheckCheck size={17} /> : <BrainCircuit size={17} />}{concept.ready ? 'آموزش آماده است · آموزش مجدد' : concept.trained_revision !== null ? 'به‌روزرسانی آموزش' : 'آموزش با نمونه‌های من'}<span className={concept.ready ? 'ready-dot' : 'pending-dot'} /></button>{!concept.ready && concept.trained_revision !== null && <p className="training-pending">نمونه‌ها تغییر کرده‌اند؛ پیش از جست‌وجو دوباره آموزش بده.</p>}</> : <p className="hint">ابتدا برای چیزی که می‌خواهی پیدا کنی یک نام بنویس و دکمهٔ + را بزن.</p>}</>
+          : <><label className="field-label" htmlFor="target-description">چه چیزی را پیدا کند؟<textarea id="target-description" maxLength={500} value={text} onChange={event => setText(event.target.value)} placeholder="مثلاً: ساختمان‌هایی با سقف قرمز و حیاط بزرگ" /></label><p className="hint">فارسی یا انگلیسی؛ بدون اتصال به سرویس ترجمه. برای هدف‌های خاص، آموزش با نمونه معمولاً مفیدتر است.</p></>}
         </section>
-        <footer className="workspace-footer"><span><span />ATLAS SCOUT <i>۰.۱</i></span><span>دادهٔ آنلاین: PDOK هلند · جست‌وجوی محلی با CLIP</span><button onClick={() => setDialog('help')}>راهنمای شروع<ArrowUpLeft size={12} /></button></footer>
+        <section className="step-section search-settings"><div className="step-heading"><span className="step-number">۳</span><h2>تنظیم جست‌وجو</h2></div><label className="field-label">اندازهٔ تقریبی هدف <span>پیکسل روی تصویر</span></label><div className="size-inputs"><label>عرض<input aria-label="عرض هدف" type="number" min={8} max={2048} value={width} disabled={busy} onChange={event => setWidth(Number(event.target.value) || 8)} /></label><X size={13} /><label>ارتفاع<input aria-label="ارتفاع هدف" type="number" min={8} max={2048} value={height} disabled={busy} onChange={event => setHeight(Number(event.target.value) || 8)} /></label><button className="icon-button" title="اندازه از نمونه‌ها" aria-label="اندازه از نمونه‌ها" disabled={!concept || busy} onClick={() => { setWidth(Math.min(2048, Math.max(8, concept!.window_width))); setHeight(Math.min(2048, Math.max(8, concept!.window_height))); }}><Layers size={17} /></button></div><label className="threshold-label" htmlFor="threshold"><span>حداقل امتیاز مدل</span><b>{fa(threshold, 2)}</b></label><input id="threshold" type="range" min={.05} max={.95} step={.05} value={threshold} disabled={busy} onChange={event => setThreshold(Number(event.target.value))} /><p className="hint">امتیاز کمتر، نتایج بیشتری نشان می‌دهد. این عدد احتمال قطعی تشخیص نیست.</p><label className="checkbox-label"><input type="checkbox" checked={thorough} disabled={busy} onChange={event => setThorough(event.target.checked)} />بررسی فشرده‌تر <span>کندتر</span></label><div className="scope-line"><span>{scope ? 'محدودهٔ انتخابی' : 'کل تصویر'}</span>{scope && <button disabled={busy} onClick={() => setScope(null)}>حذف محدوده<X size={12} /></button>}</div><div className={`plan-summary ${plan && !plan.allowed || planError ? 'warning' : ''}`}><ScanLine size={15} /><span>{planError || (plan ? plan.allowed ? `${fa(plan.windows)} کادر در سه مقیاس بررسی می‌شود` : 'بیش از ۵۰۰۰ کادر؛ با ابزار محدوده، بخش کوچک‌تری انتخاب کن یا اندازهٔ هدف را افزایش بده.' : scene ? 'محاسبهٔ محدوده…' : 'ابتدا یک تصویر وارد کن')}</span></div></section>
+      </div><div className="sidebar-footer"><button className="primary-button search-button" disabled={busy || !searchReady} onClick={() => start(() => post<Job>('/workspace/search', settings))}>{busy ? <LoaderCircle className="spin" size={19} /> : <Search size={19} />}<span>{busy ? 'در حال پردازش' : 'جست‌وجو روی تصویر'}</span><ArrowLeft size={19} /></button><small><ShieldCheck size={12} />تصویر و نمونه‌ها از کامپیوترت خارج نمی‌شوند</small></div></aside>
+      <main className="main-content"><div className="page-heading"><div><div className="eyebrow">LOCAL INTELLIGENCE / WORKSPACE</div><h2>{scene ? scene.name : 'فضای جست‌وجوی شما'}<span className="version-tag">نسخهٔ آزمایشی ۰.۲</span></h2></div><button className="text-button" disabled={busy} onClick={() => trainingInput.current?.click()}><FolderInput size={16} />ورود بستهٔ آموزشی</button></div>
+        {state && !imageAvailable && <div className="notice error" role="alert">فایل‌های مدل در بسته موجود نیستند. پوشهٔ کامل نسخهٔ آفلاین را استخراج کنید.</div>}
+        {notice && <div className={`notice ${notice.error ? 'error' : ''}`} role={notice.error ? 'alert' : 'status'}><span>{notice.error ? <CircleHelp size={17} /> : <Check size={17} />}{notice.text}</span><button aria-label="بستن پیام" onClick={() => setNotice(null)}><X size={16} /></button></div>}
+        {busy && job && ['queued', 'running'].includes(job.status) && <div className="job-panel" role="status"><LoaderCircle className="spin" size={18} /><div><span>{job.message}</span><div className="progress-track"><span style={{ width: `${job.progress}%` }} /></div></div><b>{fa(job.progress)}٪</b><button className="icon-button" aria-label="لغو عملیات" onClick={() => post(`/jobs/${job.id}/cancel`).then(() => setNotice({ text: 'درخواست لغو ثبت شد؛ محاسبهٔ جاری ممکن است کمی زمان ببرد.' })).catch(showError)}><Square size={14} /></button></div>}
+        <ImageCanvas scene={scene} tool={tool} setTool={setTool} examples={examples} detections={scan?.detections ?? []} scope={scope} focus={focus} selected={selected} busy={!!busy} canAnnotate={!!conceptId} onBox={onBox} onImport={() => sceneInput.current?.click()} onSelect={selectResult} />
+        <section className="collection-panel"><div className="collection-heading"><div className="collection-tabs"><button className={tab === 'examples' ? 'active' : ''} onClick={() => setTab('examples')}><Database size={16} />نمونه‌های آموزشی<span>{fa(examples.length)}</span></button><button className={tab === 'results' ? 'active' : ''} onClick={() => setTab('results')}><ScanLine size={16} />نتایج جست‌وجو<span>{fa(scan?.detections.length ?? 0)}</span></button></div><div className="collection-actions">{tab === 'examples' ? <button disabled={!concept || !examples.length || busy} onClick={() => save(`/workspace/concepts/${conceptId}/export`, 'atlas-training.zip')}><ArrowDownToLine size={14} />ذخیرهٔ آموزش</button> : <><button disabled={!scan} onClick={() => save(`/workspace/runs/${scan!.run}/csv`, 'atlas-results.csv')}>CSV</button><button disabled={!scan} onClick={() => save(`/workspace/runs/${scan!.run}/annotated`, 'atlas-annotated.png')}><ArrowDownToLine size={14} />تصویر نشانه‌گذاری‌شده</button></>}</div></div>
+          {tab === 'examples' ? <><div className="samples-heading"><p>{concept ? <><b>{concept.name}</b><span>کادرهای سبز: هدف · کادرهای قرمز: غیرهدف</span></> : 'یک هدف بساز تا نمونه‌هایش اینجا ذخیره شوند.'}</p><div className="sample-file-actions"><button disabled={!concept || busy} onClick={() => { setSampleLabel(1); sampleInput.current?.click(); }}><Plus size={14} />فایل نمونهٔ درست</button><button disabled={!concept || busy} onClick={() => { setSampleLabel(0); sampleInput.current?.click(); }}><Plus size={14} />فایل نمونهٔ غلط</button></div></div>{examples.length ? <div className="examples-grid">{examples.map(item => <article className={`sample-card ${item.label ? 'positive' : 'negative'}`} key={item.id}><button className="sample-photo" aria-label="نمایش نمونه روی تصویر" disabled={item.scene !== sceneId || !item.bbox} onClick={() => { if (item.bbox) setFocus({ ...item.bbox }); }}><img src={item.image_url} alt={item.label ? 'نمونه درست' : 'نمونه غلط'} /><span>{item.label ? <Check size={13} /> : <X size={13} />}{item.label ? 'درست' : 'غلط'}</span></button><div><small>{fa(item.width)} × {fa(item.height)}</small><button className="icon-button" aria-label="حذف نمونه" disabled={busy} onClick={() => mutate(() => api(`/workspace/examples/${item.id}`, { method: 'DELETE' }))}><Trash2 size={13} /></button></div></article>)}</div> : <div className="collection-empty"><SquarePlus size={25} /><strong>چند نشانه کافی است برای شروع</strong><p>یک هدف بساز، ابزار «نمونه درست» را بزن و دور آن روی تصویر کادر بکش. نمونه‌های غلط را هم اضافه کن.</p></div>}</>
+          : scan ? <>{scan.detections.length ? <><p className="results-hint">{fa(scan.settings.windows)} کادر بررسی شد؛ حداکثر ۲۰۰ نتیجه پس از حذف هم‌پوشانی نمایش داده می‌شود. برای افزودن نمونه، نتیجه را تأیید یا رد کن.</p><div className="results-grid">{scan.detections.map(item => <article className={`result-card ${selected === item.index ? 'selected' : ''}`} key={item.index}><button className="result-photo" onClick={() => selectResult(item.index)}><img src={`/api/workspace/runs/${scan.run}/crops/${item.index}`} alt={`نتیجه ${fa(item.index+1)}`} /><span className="result-number">{fa(item.index+1)}</span><b>امتیاز {fa(item.score, 2)}</b></button><div className="result-coordinates" dir="ltr">X {fa(item.bbox.x)} · Y {fa(item.bbox.y)}<small>{fa(item.bbox.width)} × {fa(item.bbox.height)} px</small></div><div className="feedback-actions">{feedback[item.index] !== undefined ? <span><Check size={13} />به نمونه‌ها اضافه شد</span> : <><button disabled={!conceptId || busy} onClick={() => markResult(item.index, 1)}><Check size={13} />درست</button><button disabled={!conceptId || busy} onClick={() => markResult(item.index, 0)}><X size={13} />غلط</button></>}</div></article>)}</div></> : <div className="collection-empty"><Search size={26} /><strong>در این تنظیمات نتیجه‌ای پیدا نشد</strong><p>امتیاز را پایین بیاور، اندازهٔ هدف را بررسی کن یا نمونه‌های متنوع‌تری آموزش بده.</p></div>}<p className="pixel-note">مختصات خروجی بر اساس پیکسل و مبدأ گوشهٔ بالا-چپ تصویر است؛ مختصات جغرافیایی استخراج نمی‌شود.</p></> : <div className="collection-empty"><ScanLine size={26} /><strong>نتایج روی همین تصویر مشخص می‌شوند</strong><p>بعد از آموزش، «جست‌وجو روی تصویر» را بزن. نتیجه‌ها را می‌توانی به‌عنوان نمونهٔ درست یا غلط به آموزش اضافه کنی.</p></div>}
+        </section><footer className="workspace-footer"><span><span className="status-dot" />پردازش محلی · CPU</span><span>بدون ارسال تصویر، بدون نیاز به اینترنت</span><span>ATLAS SCOUT / 0.2</span></footer>
       </main>
     </div>
-    <input hidden ref={archiveInput} type="file" accept=".zip,application/zip" onChange={event => { importZip(event.target.files?.[0]); event.target.value = ''; }} />
-
-    {dialog && <div className="modal-backdrop" onClick={() => setDialog(null)}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onClick={event => event.stopPropagation()}><div className="modal-heading"><span className="modal-icon">{dialog === 'settings' ? <Settings2 size={21} /> : <CircleHelp size={21} />}</span><div><span>ATLAS SCOUT</span><h2 id="dialog-title">{dialog === 'settings' ? 'تنظیمات و وضعیت برنامه' : 'از کجا شروع کنم؟'}</h2></div><button autoFocus className="icon-button" aria-label="بستن پنجره" onClick={() => setDialog(null)}><X size={20} /></button></div>
-      {dialog === 'settings' ? <><p className="modal-intro">مدل‌ها فقط بار اول دانلود می‌شوند. پس از آن، جست‌وجوی کتابخانهٔ آماده به اینترنت نیاز ندارد.</p><div className="settings-row"><span>مدل تصویر</span><strong>{state?.models.image_loaded ? 'بارگذاری شده' : 'هنوز بارگذاری نشده'}</strong></div><div className="settings-row"><span>مدل متن فارسی و انگلیسی</span><strong>{state?.models.text_loaded ? 'بارگذاری شده' : 'هنوز بارگذاری نشده'}</strong></div><div className="settings-row"><span>پردازش</span><strong>محلی · CPU</strong></div><button className="secondary-button full-width" disabled={busy} onClick={() => { setDialog(null); start(() => post<Job>('/models')); }}><Download size={16} />دانلود و آماده‌سازی مدل‌ها</button><div className="settings-path"><span>محل ذخیرهٔ تصاویر، مدل‌ها و گزارش خطا</span><code dir="ltr">{state?.data_directory ?? '—'}</code></div><div className="modal-button-row"><button className="secondary-button" disabled={busy} onClick={() => { setDialog(null); archiveInput.current?.click(); }}><Upload size={15} />واردکردن مجموعه</button><button className="secondary-button" disabled={!total || busy || total === indexed} onClick={() => { setDialog(null); start(() => post<Job>('/index')); }}><Database size={15} />تکمیل نمایه</button></div></>
-      : <><ol className="help-steps"><li><span>۱</span><div><strong>یک محدوده انتخاب کن</strong><p>مرکز پیش‌فرض آمستردام است. روی نقشهٔ هلند کلیک کن، شعاع را تنظیم کن و تصاویر را دریافت کن.</p></div></li><li><span>۲</span><div><strong>نمایهٔ هوش مصنوعی را بساز</strong><p>دکمهٔ «ساخت نمایه» را بزن. اولین بار دانلود مدل و پردازش تصاویر زمان می‌برد.</p></div></li><li><span>۳</span><div><strong>نشانه بده و مقایسه کن</strong><p>عکس هوایی یا توضیح فارسی و انگلیسی وارد کن. روی هر نتیجه کلیک کن تا محلش را ببینی.</p></div></li></ol><div className="help-note"><Bookmark size={19} /><p>مجموعهٔ شخصی می‌تواند متعلق به هر نقطهٔ دنیا باشد: یک ZIP شامل <code>buildings.json</code> و تصاویر. قالب دقیق در راهنمای پروژه آمده است.</p></div><p className="modal-intro">این نسخه روی ظاهر سقف و محوطه تمرکز دارد؛ یافتن قطعی یک ساختمان از عکس خیابانی یا جست‌وجوی تمام دنیا را تضمین نمی‌کند.</p><button className="search-button" onClick={() => setDialog(null)}>شروع کاوش<ArrowLeft size={18} /></button></>}
-    </section></div>}
+    <input ref={sceneInput} hidden type="file" accept=".png,.jpg,.jpeg,.tif,.tiff,.webp,.bmp" onChange={event => { importScene(event.target.files?.[0]); event.target.value = ''; }} />
+    <input ref={sampleInput} hidden type="file" multiple accept=".png,.jpg,.jpeg,.tif,.tiff,.webp,.bmp" onChange={event => { uploadExamples(event.target.files); event.target.value = ''; }} />
+    <input ref={trainingInput} hidden type="file" accept=".zip" onChange={event => { const file = event.target.files?.[0]; if (file) start(() => api<Job>('/workspace/training/import', { method: 'POST', body: file })); event.target.value = ''; }} />
+    {dialog && <div className="modal-backdrop" onClick={() => setDialog(null)}><section className="modal" role="dialog" aria-modal="true" aria-label={dialog === 'help' ? 'راهنمای آموزش و جست‌وجو' : 'تنظیمات برنامه'} onClick={event => event.stopPropagation()}><div className="modal-heading"><span>{dialog === 'help' ? <BookOpen size={22} /> : <Settings2 size={22} />}</span><h2>{dialog === 'help' ? 'از نمونه تا نتیجه' : 'فضای کار آفلاین'}</h2><button className="icon-button" aria-label="بستن پنجره" onClick={() => setDialog(null)}><X size={19} /></button></div>{dialog === 'help' ? <><ol className="help-steps"><li><b>تصویر ماهواره‌ای را وارد کن.</b><p>هر منطقه‌ای که بخواهی؛ فایل را خودت به برنامه می‌دهی. برای بزرگ‌نمایی از چرخ ماوس استفاده کن.</p></li><li><b>هدف را با نمونه نشان بده.</b><p>یک نام بساز، با ابزار سبز دور هدف‌ها و با ابزار قرمز دور موارد مشابه ولی نامطلوب کادر بکش. دست‌کم ۲ نمونه از هر نوع، و ترجیحاً ۵ تا ۲۰ نمونهٔ متنوع انتخاب کن.</p></li><li><b>آموزش بده و جست‌وجو کن.</b><p>اندازهٔ هدف به پیکسل را بررسی کن. پس از آموزش، جست‌وجو را بزن. با تأیید و رد نتیجه‌ها نمونه اضافه کن؛ سپس دوباره آموزش بده.</p></li></ol><div className="help-note">آموزش، یک دسته‌بند محلی روی ویژگی‌های تصویری CLIP می‌سازد. تشخیص بی‌خطا تضمین نمی‌شود و امتیاز مدل احتمال قطعی نیست. جزئیات تصویر، تعداد نمونه و شباهت مقیاس بر نتیجه اثر دارند.</div><button className="primary-button" onClick={() => setDialog(null)}>شروع می‌کنم<ArrowLeft size={17} /></button></> : <><div className="settings-row"><ShieldCheck size={19} /><div><b>تمام مراحل آفلاین</b><p>مدل‌ها همراه بسته هستند. تصویر، آموزش، جست‌وجو و خروجی هیچ اتصال اینترنتی لازم ندارند.</p></div></div><div className="settings-row"><Database size={19} /><div><b>محل ذخیرهٔ تصاویر و آموزش</b><code dir="ltr">{state?.data_directory ?? '…'}</code><p>نمونه‌ها بعد از بستن برنامه باقی می‌مانند. برای جابه‌جایی آموزش از «ذخیرهٔ آموزش» و «ورود بستهٔ آموزشی» استفاده کن.</p></div></div><div className="model-status"><span>مدل تصویری <b>{imageAvailable ? 'موجود' : 'ناموجود'}</b></span><span>مدل متن فارسی/انگلیسی <b>{state?.models.text_available ? 'موجود' : 'ناموجود'}</b></span></div></>}</section></div>}
   </div>;
 }
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
+createRoot(document.getElementById('root')!).render(<App />);

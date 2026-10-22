@@ -11,7 +11,7 @@ from pathlib import Path
 import uvicorn
 
 from .config import data_directory
-from .server import create_app
+from .offline_server import create_app
 
 
 def main() -> None:
@@ -57,8 +57,13 @@ def main() -> None:
         return
     try:
         from PySide6.QtCore import QTimer, QUrl
-        from PySide6.QtGui import QColor, QDesktopServices
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+        from PySide6.QtGui import QColor
+        from PySide6.QtWebEngineCore import (
+            QWebEnginePage,
+            QWebEngineProfile,
+            QWebEngineSettings,
+            QWebEngineUrlRequestInterceptor,
+        )
         from PySide6.QtWebEngineWidgets import QWebEngineView
         from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow
     except ImportError as exc:
@@ -66,43 +71,48 @@ def main() -> None:
 
     class LocalPage(QWebEnginePage):
         def acceptNavigationRequest(self, destination, navigation_type, is_main_frame):
+            if destination.scheme() == "blob" and destination.toString().startswith(
+                f"blob:http://127.0.0.1:{port}/"
+            ):
+                return True
             if (
                 destination.scheme() == "http"
                 and destination.host() == "127.0.0.1"
                 and destination.port() == port
             ):
                 return True
-            if (
-                is_main_frame
-                and destination.scheme() == "https"
-                and destination.host()
-                in {
-                    "www.openstreetmap.org",
-                    "www.pdok.nl",
-                    "www.kadaster.nl",
-                    "huggingface.co",
-                }
-            ):
-                QDesktopServices.openUrl(destination)
             return False
+
+    class OfflineInterceptor(QWebEngineUrlRequestInterceptor):
+        def interceptRequest(self, information):
+            destination = information.requestUrl()
+            local = (
+                destination.scheme() == "http"
+                and destination.host() == "127.0.0.1"
+                and destination.port() == port
+            )
+            if not local and destination.scheme() not in ("data", "blob", "about"):
+                information.block(True)
 
     application = QApplication(sys.argv[:1])
     application.setApplicationName("Atlas Scout")
     application.setOrganizationName("AtlasScout")
     window = QMainWindow()
-    window.setWindowTitle("اطلس | جست‌وجوی تصویری ساختمان")
+    window.setWindowTitle("اطلس آفلاین | آموزش و جست‌وجو در تصویر")
     window.resize(1440, 940)
     window.setMinimumSize(1080, 760)
     view = QWebEngineView(window)
     # Off-the-record profile: session cookies do not survive app restarts.
     profile = QWebEngineProfile(view)
+    interceptor = OfflineInterceptor(profile)
+    profile.setUrlRequestInterceptor(interceptor)
 
     def save_download(request):
         filename, _ = QFileDialog.getSaveFileName(
             window,
             "ذخیرهٔ خروجی",
             str(Path.home() / "Downloads" / Path(request.suggestedFileName()).name),
-            "GeoJSON (*.geojson);;All files (*)",
+            "All files (*);;PNG images (*.png);;CSV (*.csv);;Training ZIP (*.zip)",
         )
         if filename:
             selected = Path(filename)
@@ -131,7 +141,7 @@ def main() -> None:
                 application.quit()
 
             page.runJavaScript(
-                "Boolean(document.querySelector('h1') && document.querySelector('.map-canvas') && !document.querySelector('.notice.error'))",
+                "Boolean(document.querySelector('h1') && document.querySelector('.scene-viewport') && !document.querySelector('.notice.error'))",
                 received,
             )
 

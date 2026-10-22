@@ -11,3 +11,5 @@ __pycache__/
 .atlas-data/
 test-results/
 *.log
+.model-bundle/
+.model-cache/
