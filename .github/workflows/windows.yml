@@ -2,15 +2,18 @@ name: Windows desktop build
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, atlas-scout-preview]
   pull_request:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: atlas-windows-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,17 +27,90 @@ jobs:
           cache-dependency-path: ui/package-lock.json
       - name: Install, test, and package
         shell: pwsh
-        run: ./scripts/build-windows.ps1
-      - name: Smoke test the packaged Windows application
+        run: |
+          Start-Transcript -Path build.log
+          try { ./scripts/build-windows.ps1 } finally { Stop-Transcript }
+      - name: Smoke test packaged Windows application
         shell: pwsh
         env:
           ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-smoke
         run: |
-          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--smoke-test' -Wait -PassThru
-          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Packaged desktop smoke test failed.' }
+          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--smoke-test' -PassThru
+          if (-not $ApplicationProcess.WaitForExit(90000)) { $ApplicationProcess.Kill(); throw 'Desktop smoke timed out.' }
+          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Packaged desktop smoke failed.' }
+      - name: Test real AI in the Windows executable
+        shell: pwsh
+        env:
+          ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-ai-smoke
+        run: |
+          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--ai-smoke-test' -PassThru
+          if (-not $ApplicationProcess.WaitForExit(900000)) { $ApplicationProcess.Kill(); throw 'AI smoke timed out.' }
+          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Packaged real AI smoke failed.' }
+          Get-Content "$env:ATLAS_DATA_DIR/ai-smoke.json"
+      - name: Check package and write checksum
+        shell: pwsh
+        run: |
+          if ((Get-Item 'dist/AtlasScout-Windows-x64.zip').Length -ge 2GB) { throw 'Package exceeds the GitHub release asset limit.' }
+          $PackageHash = (Get-FileHash 'dist/AtlasScout-Windows-x64.zip' -Algorithm SHA256).Hash.ToLower()
+          "$PackageHash  AtlasScout-Windows-x64.zip" | Set-Content 'dist/SHA256SUMS.txt'
       - uses: actions/upload-artifact@v4
         with:
           name: AtlasScout-Windows-x64
-          path: dist/AtlasScout-Windows-x64.zip
+          path: |
+            dist/AtlasScout-Windows-x64.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
+      - name: Build diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path build.log) {
+            '### Build output' >> $env:GITHUB_STEP_SUMMARY
+            '```text' >> $env:GITHUB_STEP_SUMMARY
+            Get-Content build.log -Tail 120 >> $env:GITHUB_STEP_SUMMARY
+            '```' >> $env:GITHUB_STEP_SUMMARY
+          }
+          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
+            if (Test-Path $LogPath) {
+              "### $([IO.Path]::GetFileName($LogPath))" >> $env:GITHUB_STEP_SUMMARY
+              '```text' >> $env:GITHUB_STEP_SUMMARY
+              Get-Content $LogPath -Tail 100 >> $env:GITHUB_STEP_SUMMARY
+              '```' >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: windows-build-diagnostics
+          path: |
+            build.log
+            ${{ runner.temp }}/atlas-smoke/*.log
+            ${{ runner.temp }}/atlas-ai-smoke/*.log
+  publish:
+    needs: windows
+    if: github.event_name == 'push' && github.ref == 'refs/heads/atlas-scout-preview'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AtlasScout-Windows-x64
+          path: package
+      - name: Publish tested portable Windows preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RELEASE_TAG: atlas-v0.1.0-preview.${{ github.run_number }}
+        shell: bash
+        run: |
+          cat > release-notes.md <<'NOTES'
+          Portable Windows x64 preview. Extract the entire ZIP and open AtlasScout.exe. Python and Node.js installation is not required.
+
+          The packaged application passed a native desktop check and real image/Persian/English AI inference with PDOK aerial building images on Windows.
+
+          The first use downloads the pinned AI models. Maps and new imagery need Internet access. This preview searches a prepared local building library; building-identification accuracy has not been benchmarked.
+          NOTES
+          gh release create "$RELEASE_TAG" package/AtlasScout-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout — Windows portable preview' --notes-file release-notes.md

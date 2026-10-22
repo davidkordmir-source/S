@@ -20,6 +20,9 @@ def main() -> None:
     parser.add_argument(
         "--smoke-test", action="store_true", help="Check the desktop document and session, then exit"
     )
+    parser.add_argument(
+        "--ai-smoke-test", action="store_true", help="Validate real models and imagery, then exit"
+    )
     parser.add_argument("--port", type=int, default=0, help="Loopback port (default: choose an unused port)")
     args = parser.parse_args()
     root = data_directory()
@@ -31,6 +34,11 @@ def main() -> None:
         ],
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if args.ai_smoke_test:
+        from .validation import validate_packaged_ai
+
+        validate_packaged_ai(root)
+        return
     app = create_app(root)
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", args.port))

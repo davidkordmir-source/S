@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -25,10 +27,15 @@ class Store:
                 geometry TEXT, vector BLOB, dimension INTEGER, index_version TEXT
             )""")
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         db = sqlite3.connect(self.database, timeout=30)
         db.row_factory = sqlite3.Row
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     @staticmethod
     def public(row: sqlite3.Row) -> dict:
