@@ -10,8 +10,17 @@ if ($LASTEXITCODE -ne 0) { throw 'Preparing the verified native ECW/raster decod
 if ($LASTEXITCODE -ne 0) { throw 'Actual input image format validation failed before packaging.' }
 & '.venv/Scripts/python.exe' scripts/bundle-models.py
 if ($LASTEXITCODE -ne 0) { throw 'Preparing verified offline model files failed.' }
-& '.venv/Scripts/python.exe' -m pytest -q
-if ($LASTEXITCODE -ne 0) { throw 'Tests failed; packaging stopped.' }
+& '.venv/Scripts/python.exe' -m pytest -q --junitxml=pytest-results.xml 2>&1 | Tee-Object -FilePath pytest.log
+if ($LASTEXITCODE -ne 0) {
+    if (Test-Path 'pytest-results.xml') {
+        [xml]$TestReport = Get-Content 'pytest-results.xml' -Raw
+        foreach ($Failure in $TestReport.SelectNodes('//failure | //error')) {
+            $Details = $Failure.InnerText.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=$($Failure.ParentNode.name)::$Details"
+        }
+    }
+    throw 'Tests failed; packaging stopped.'
+}
 & '.venv/Scripts/python.exe' -m PyInstaller --noconfirm --clean AtlasScout.spec
 if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
 if (-not (Test-Path 'dist/AtlasScout/AtlasScout.exe')) { throw 'Expected executable was not produced.' }

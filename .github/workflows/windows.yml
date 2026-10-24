@@ -112,6 +112,8 @@ jobs:
           name: windows-build-diagnostics
           path: |
             build.log
+            pytest.log
+            pytest-results.xml
             ${{ runner.temp }}/atlas-formats-smoke/*.log
             ${{ runner.temp }}/atlas-large-smoke/*.log
             ${{ runner.temp }}/atlas-smoke/*.log
