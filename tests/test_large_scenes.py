@@ -15,7 +15,7 @@ from PIL import Image
 
 from atlas.errors import Cancelled, UserError
 from atlas.jobs import Job
-from atlas.large_validation import FAR_X, FAR_Y, TIB, make_sparse_scene, mark_sparse, validate_large_files
+from atlas.large_validation import FAR_X, FAR_Y, TIB, extend_sparse, make_sparse_scene, validate_large_files
 from atlas.offline_server import OfflineServices, create_app
 from atlas.scene_source import SceneReader
 from atlas.workshop import Workshop
@@ -104,8 +104,7 @@ def test_ecw_file_over_one_tib_is_read_by_path_not_bytes(tmp_path, monkeypatch):
     source = tmp_path / "huge.ecw"
     shutil.copyfile(Path(__file__).parent / "data/ecw/jrc.ecw", source)
     with source.open("r+b") as file:
-        mark_sparse(file)
-        file.truncate(TIB + 1)
+        extend_sparse(file, TIB + 1)
 
     def no_bytes(*args, **kwargs):
         raise AssertionError("A large source must not be read into bytes")
@@ -120,8 +119,7 @@ def test_streamed_http_scene_upload_exceeds_old_150_mib_limit(tmp_path):
     source = tmp_path / "large.ecw"
     shutil.copyfile(Path(__file__).parent / "data/ecw/jrc.ecw", source)
     with source.open("r+b") as file:
-        mark_sparse(file)
-        file.truncate(160 * 1024 * 1024)
+        extend_sparse(file, 160 * 1024 * 1024)
     services = OfflineServices(tmp_path / "data", OfflineTestEngine())
     app = create_app(token="stream-test", services=services)
     listener = socket.socket()

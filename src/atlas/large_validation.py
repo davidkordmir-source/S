@@ -43,6 +43,32 @@ def mark_sparse(file):
             raise OSError(ctypes.get_last_error(), "Cannot mark the test fixture as sparse")
 
 
+def extend_sparse(file, size):
+    # CPython 3.12 uses Windows CRT _chsize_s for truncate(), which explicitly
+    # writes zeroes when extending. A seek + one-byte write preserves the hole.
+    mark_sparse(file)
+    if size > os.fstat(file.fileno()).st_size:
+        file.seek(size - 1)
+        file.write(b"\0")
+
+
+def allocated_size(path):
+    if os.name != "nt":
+        return path.stat().st_blocks * 512
+    import ctypes
+    from ctypes import wintypes
+
+    high = wintypes.DWORD()
+    function = ctypes.WinDLL("kernel32", use_last_error=True).GetCompressedFileSizeW
+    function.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    function.restype = wintypes.DWORD
+    ctypes.set_last_error(0)
+    low = function(str(path), ctypes.byref(high))
+    if low == 0xFFFFFFFF and ctypes.get_last_error():
+        raise OSError(ctypes.get_last_error(), "Cannot measure sparse file allocation")
+    return (high.value << 32) | low
+
+
 def make_sparse_scene(path: Path, far_offset: int = TIB + 4096):
     import rasterio
     from rasterio.windows import Window
@@ -166,7 +192,8 @@ def validate_large_files(root: Path):
         assert max(picture.size) == 4096
         assert Workshop(folder / "workspace", None).scene_path(scene["id"]) == source
         logical_size = source.stat().st_size
-        allocated = source.stat().st_blocks * 512 if hasattr(source.stat(), "st_blocks") else None
+        allocated = allocated_size(source)
+        assert allocated < 10 * 1024 * 1024, "Test fixture must remain physically sparse"
     delta = max(0, peak_memory() - baseline)
     assert delta < 600 * 1024 * 1024, f"Large-file smoke exceeded memory budget: {delta}"
     report = dict(

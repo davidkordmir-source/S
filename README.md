@@ -146,11 +146,13 @@ ATLAS_DATA_DIR="$PWD/.atlas-data" .venv/bin/python -m atlas --serve --port 8765
 .venv/bin/ruff check src tests scripts
 npm run build --prefix ui
 python scripts/smoke-ui.py
+python scripts/smoke-large-ui.py
+ATLAS_DATA_DIR=/tmp/atlas-large-check .venv/bin/python -m atlas --large-files-smoke-test
 ATLAS_DATA_DIR=/tmp/atlas-offline-check .venv/bin/python -m atlas --ai-smoke-test
 ```
 
 - آزمون‌های API و رابط از بردارهای قطعی مخصوص آزمون استفاده می‌کنند؛ هیچ‌کدام به برنامهٔ اصلی تزریق نمی‌شود. مسیر ورود تصویر، کادرکشیدن، آموزش، جست‌وجو، بازخورد، بازآموزی، CSV/PNG، بستهٔ آموزشی، محدوده و دو اندازهٔ پنجره بررسی می‌شود. آزمون رابط به Playwright و Chromium نیاز دارد؛ `CHROMIUM_EXECUTABLE` اختیاری است.
 - `--ai-smoke-test` **مدل واقعی همراه بسته** را با پوشهٔ دادهٔ جدید و اتصال‌های بیرونی مسدودشده بارگذاری می‌کند؛ آموزش، جست‌وجو روی تصویر دوم، تفکیک نمونهٔ هدف از غیرهدف، بازخورد و بازآموزی، انتقال نمونه‌ها و متن فارسی/انگلیسی را بررسی می‌کند. دادهٔ کنترل‌شده برای سلامت فرایند است، نه اندازه‌گیری دقت شناسایی ساختمان واقعی. نتیجه در `ai-smoke.json` ثبت می‌شود.
-- CI ویندوز هر دو گزینهٔ `--smoke-test` و `--ai-smoke-test` را با **خود EXE** اجرا می‌کند. انتشار فقط پس از موفقیت آن‌ها و تولید SHA-256 انجام می‌شود.
+- CI ویندوز چهار بررسی `--formats-smoke-test`، `--large-files-smoke-test`، `--smoke-test` و `--ai-smoke-test` را با **خود EXE** اجرا می‌کند. انتشار فقط پس از موفقیت همهٔ آن‌ها و تولید SHA-256 انجام می‌شود. گزارش ساختاریافتهٔ خطاهای آزمون ویندوز نیز برای رفع اشکال ثبت می‌شود.
 
 نقطهٔ ورود برنامه `atlas.__main__` از `offline_server.py` و `workshop.py` استفاده می‌کند. ماژول‌های قدیمی `server.py`، `imagery.py`، `store.py` و آزمون‌هایشان برای سازگاری توسعه در مخزن باقی مانده‌اند؛ سرویس‌های آنلاین قدیمی در برنامهٔ آفلاین راه‌اندازی نمی‌شوند.
