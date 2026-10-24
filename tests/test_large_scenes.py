@@ -199,3 +199,18 @@ def test_huge_ecw_index_is_rejected_before_native_allocation(tmp_path):
     source.write_bytes(header + level + bytes(4))
     with pytest.raises(UserError, match="جدول بلوک"):
         check_scene_index_budget(source)
+
+
+def test_raster_block_cache_stays_bounded_after_reader_closes():
+    import rasterio
+
+    original = rasterio.env.get_gdal_config("GDAL_CACHEMAX")
+    try:
+        rasterio.env.set_gdal_config("GDAL_CACHEMAX", 256 * 1024 * 1024)
+        with SceneReader(Path(__file__).parent / "data/formats/basic.tiff", {"kind": "rasterio"}) as reader:
+            assert reader.read().mode == "RGB"
+        # Closing a reader must not restore a larger process-wide cache while
+        # other scene/tile readers are still active.
+        assert rasterio.env.get_gdal_config("GDAL_CACHEMAX") == 64 * 1024 * 1024
+    finally:
+        rasterio.env.set_gdal_config("GDAL_CACHEMAX", original)

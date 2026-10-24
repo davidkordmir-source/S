@@ -140,8 +140,10 @@ class SceneReader:
         import rasterio
         from rasterio.enums import ColorInterp, Resampling
 
+        # GDAL's block cache is process-wide. Keep the bound outside Env so a
+        # concurrent reader closing its Env cannot restore a larger cache.
+        rasterio.env.set_gdal_config("GDAL_CACHEMAX", 64 * 1024 * 1024)
         self.environment = rasterio.Env(
-            GDAL_CACHEMAX=64 * 1024 * 1024,
             GDAL_PAM_ENABLED=False,
             PROJ_NETWORK="OFF",
             GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
