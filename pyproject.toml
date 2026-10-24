@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas-scout"
-version = "0.2.1"
+version = "0.3.0"
 description = "Windows desktop building search with local image and Persian text embeddings"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "httpx>=0.28,<0.29",
-  "pillow>=11,<14", "pillow-heif>=1.8,<2", "ecw2tiff==0.1.1", "numpy>=2,<3", "pyproj>=3.7,<4",
+  "pillow>=11,<14", "pillow-heif>=1.8,<2", "ecw2tiff==0.1.1", "rasterio==1.5.2", "numpy>=2,<3", "pyproj>=3.7,<4",
   "defusedxml>=0.7,<1", "PySide6>=6.8,<7",
   "scikit-learn>=1.6,<2", "scipy>=1.15,<2",
 ]

@@ -1,7 +1,7 @@
 # Run on Windows: python -m PyInstaller --noconfirm AtlasScout.spec
 # Both pinned model snapshots are included. Runtime never downloads weights.
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata, collect_dynamic_libs, collect_all, collect_delvewheel_libs_directory
 
 root = Path(SPECPATH)
 datas = [(str(root / "ui/dist"), "ui")]
@@ -11,13 +11,16 @@ datas += [(str(root / '.model-bundle'), 'models')]
 if not (root / ".raster-bundle/native-validation.json").is_file():
     raise RuntimeError("Run scripts/bundle-raster.py and validate the raster tools before packaging")
 datas += [(str(root / ".raster-bundle"), "raster"), (str(root / "tests/data"), "validation-data")]
-binaries = collect_dynamic_libs("pillow_heif")
+raster_data, raster_binaries, raster_imports = collect_all("rasterio")
+dll_data, dll_binaries = collect_delvewheel_libs_directory("rasterio")
+datas += raster_data + dll_data
+binaries = collect_dynamic_libs("pillow_heif") + raster_binaries + dll_binaries
 for package in ("sentence_transformers", "transformers", "certifi", "tokenizers"):
     datas += collect_data_files(package)
 for distribution in ("sentence-transformers", "transformers", "torch", "scikit-learn", "huggingface-hub", "ecw2tiff"):
     datas += copy_metadata(distribution)
 
-hiddenimports = collect_submodules("sentence_transformers") + [
+hiddenimports = raster_imports + collect_submodules("sentence_transformers") + [
     "pillow_heif", "_pillow_heif", "ecw2tiff", "ecw2tiff.ecw2tiff",
     "transformers.models.clip.modeling_clip",
     "transformers.models.clip.processing_clip",

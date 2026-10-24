@@ -1,4 +1,7 @@
-"""Shared local image decoding for scenes, examples and imported training packs."""
+"""Bounded full-image decoding for examples and legacy small-image callers.
+
+Large scenes use scene_source.SceneReader and never enter this byte API.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ from .errors import UserError
 
 register_heif_opener(thumbnails=False)
 
-MAX_SCENE_BYTES = 150 * 1024 * 1024
+MAX_DECODE_BYTES = 150 * 1024 * 1024
 MAX_PIXELS = 64_000_000
 FORMAT_GROUPS = [
     ("PNG / APNG", (".png", ".apng")),
@@ -76,7 +79,7 @@ def format_support() -> dict:
 
 
 def read_picture(data: bytes, *, scene: bool = False) -> Image.Image:
-    if not data or len(data) > (MAX_SCENE_BYTES if scene else 15 * 1024 * 1024):
+    if not data or len(data) > (MAX_DECODE_BYTES if scene else 15 * 1024 * 1024):
         raise UserError("حجم تصویر بیش از حد مجاز است.")
     maximum_pixels = MAX_PIXELS if scene else 16_000_000
     if ecw_reader.is_ecw(data):
@@ -107,33 +110,7 @@ def read_picture(data: bytes, *, scene: bool = False) -> Image.Image:
                     result = raster_reader.read_raster(data, maximum_pixels)
                     result.info.setdefault("atlas_import_notes", []).extend(notes)
                     return result
-                source.load()
-                picture = ImageOps.exif_transpose(source)
-                if picture.mode in ("I", "F") or picture.mode.startswith("I;16"):
-                    array = np.asarray(picture, dtype=np.float32)
-                    stride = max(1, int(np.ceil(np.sqrt(array.size / 1_000_000))))
-                    sample = array[::stride, ::stride]
-                    finite = sample[np.isfinite(sample)]
-                    low, high = np.percentile(finite, (0.5, 99.5)) if finite.size else (0, 0)
-                    if high > low:
-                        array = np.nan_to_num(
-                            (array - low) * (255 / float(high - low)), nan=0, posinf=255, neginf=0
-                        )
-                        array = np.clip(array, 0, 255).astype(np.uint8)
-                    else:
-                        array = np.zeros(array.shape, dtype=np.uint8)
-                    picture = Image.fromarray(array)
-                    notes.append("تصویر خاکستری با تنظیم خودکار دامنهٔ روشنایی به ۸ بیت تبدیل شد.")
-                if picture.mode in ("RGBA", "LA", "PA") or (
-                    picture.mode == "P" and "transparency" in picture.info
-                ):
-                    rgba = picture.convert("RGBA")
-                    background = Image.new("RGBA", rgba.size, "white")
-                    result = Image.alpha_composite(background, rgba).convert("RGB")
-                else:
-                    result = picture.convert("RGB")
-                result.info["atlas_import_notes"] = notes
-                return result
+                return normalize_open_picture(source)
     except UnidentifiedImageError as exc:
         if raster_reader.available():
             return raster_reader.read_raster(data, maximum_pixels)
@@ -148,3 +125,35 @@ def read_picture(data: bytes, *, scene: bool = False) -> Image.Image:
         Image.DecompressionBombError,
     ) as exc:
         raise UserError("فایل تصویر ناقص، خراب یا دارای نوع فشرده‌سازی پشتیبانی‌نشده است.") from exc
+
+
+def normalize_open_picture(source: Image.Image) -> Image.Image:
+    notes = []
+    if source.format == "PSD":
+        notes.append("تصویر ادغام‌شدهٔ PSD وارد شد؛ لایه‌ها جداگانه وارد نمی‌شوند.")
+    elif getattr(source, "n_frames", 1) > 1:
+        notes.append("فایل چندصفحه‌ای یا متحرک بود؛ فقط صفحه یا فریم اول وارد شد.")
+        source.seek(0)
+    source.load()
+    picture = ImageOps.exif_transpose(source)
+    if picture.mode in ("I", "F") or picture.mode.startswith("I;16"):
+        array = np.asarray(picture, dtype=np.float32)
+        stride = max(1, int(np.ceil(np.sqrt(array.size / 1_000_000))))
+        sample = array[::stride, ::stride]
+        finite = sample[np.isfinite(sample)]
+        low, high = np.percentile(finite, (0.5, 99.5)) if finite.size else (0, 0)
+        if high > low:
+            array = np.nan_to_num((array - low) * (255 / float(high - low)), nan=0, posinf=255, neginf=0)
+            array = np.clip(array, 0, 255).astype(np.uint8)
+        else:
+            array = np.zeros(array.shape, dtype=np.uint8)
+        picture = Image.fromarray(array)
+        notes.append("تصویر خاکستری با تنظیم خودکار دامنهٔ روشنایی به ۸ بیت تبدیل شد.")
+    if picture.mode in ("RGBA", "LA", "PA") or (picture.mode == "P" and "transparency" in picture.info):
+        rgba = picture.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, "white")
+        result = Image.alpha_composite(background, rgba).convert("RGB")
+    else:
+        result = picture.convert("RGB")
+    result.info["atlas_import_notes"] = notes
+    return result

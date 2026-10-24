@@ -1,5 +1,7 @@
 # Resolved on Python 3.12; CPU-only PyTorch. Model weights download separately.
 --extra-index-url https://download.pytorch.org/whl/cpu
+affine==3.0.1
+attrs==26.1.0
 altgraph==0.17.5
 annotated-doc==0.0.5
 annotated-types==0.8.0
@@ -40,6 +42,7 @@ pydantic_core==2.50.1
 Pygments==2.21.0
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.9
+pyparsing==3.3.3
 pyproj==3.8.0
 PySide6==6.12.0
 PySide6_Addons==6.12.0
@@ -49,6 +52,7 @@ PySide6_WebEngine==6.12.0.140
 pytest==9.1.1
 pytest-asyncio==1.4.0
 PyYAML==6.0.3
+rasterio==1.5.2
 regex==2026.9.29
 rich==15.0.0
 ruff==0.17.1

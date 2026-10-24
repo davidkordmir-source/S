@@ -4,7 +4,9 @@ import hashlib
 import io
 import json
 import math
+import shutil
 import sqlite3
+import threading
 import time
 import uuid
 import zipfile
@@ -21,8 +23,8 @@ from .config import INDEX_VERSION
 from .engine import Engine
 from .errors import UserError
 from .image_io import MAX_PIXELS, read_picture
-from .image_io import MAX_SCENE_BYTES as MAX_SCENE_BYTES
 from .jobs import Job
+from .scene_source import SceneReader
 
 MAX_WINDOWS = 5000
 MAX_EXAMPLES = 500
@@ -54,6 +56,9 @@ class Workshop:
         ]
         for path in (self.images, self.crops, self.cache):
             path.mkdir(parents=True, exist_ok=True)
+        self.tiles = self.folder / "tiles"
+        self.tiles.mkdir(exist_ok=True)
+        self.tile_gate = threading.BoundedSemaphore(4)
         self.database = self.folder / "workspace.sqlite3"
         with self.connect() as db:
             db.executescript("""
@@ -71,6 +76,16 @@ class Workshop:
                   id TEXT PRIMARY KEY,scene TEXT,concept TEXT,revision INTEGER,
                   settings TEXT,results TEXT,created REAL);
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(scenes)")}
+            for name, kind in [
+                ("source_path", "TEXT"),
+                ("source_meta", "TEXT"),
+                ("source_size", "INTEGER"),
+                ("source_mtime", "INTEGER"),
+                ("storage", "TEXT"),
+            ]:
+                if name not in columns:
+                    db.execute(f"ALTER TABLE scenes ADD COLUMN {name} {kind}")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -88,44 +103,173 @@ class Workshop:
             row = db.execute("SELECT * FROM scenes WHERE id=?", (id,)).fetchone()
         if row is None:
             raise UserError("تصویر پیدا نشد.")
-        return {**dict(row), "preview_url": f"/api/workspace/scenes/{id}/preview"}
+        return {
+            **dict(row),
+            "preview_url": f"/api/workspace/scenes/{id}/preview",
+            "approximate_preview": bool(json.loads(row["source_meta"] or "{}").get("preview_approximate")),
+        }
 
     def scene_path(self, id: str) -> Path:
-        self.scene(id)
-        return self.images / f"{id}.png"
+        info = self.scene(id)
+        path = Path(info["source_path"]) if info.get("source_path") else self.images / f"{id}.png"
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise UserError(
+                "فایل اصلی پیدا نشد. آن را در محل اصلی نگه دار یا دوباره از مسیر جدید باز کن."
+            ) from exc
+        if info.get("source_size") is not None and (
+            stat.st_size != info["source_size"] or stat.st_mtime_ns != info["source_mtime"]
+        ):
+            raise UserError("فایل اصلی پس از ورود تغییر کرده است؛ برای حفظ درستی مختصات دوباره آن را باز کن.")
+        return path
 
     def scenes(self) -> list[dict]:
         with self.connect() as db:
             return [
-                {**dict(row), "preview_url": f"/api/workspace/scenes/{row['id']}/preview"}
+                {
+                    **dict(row),
+                    "preview_url": f"/api/workspace/scenes/{row['id']}/preview",
+                    "approximate_preview": bool(
+                        json.loads(row["source_meta"] or "{}").get("preview_approximate")
+                    ),
+                }
                 for row in db.execute("SELECT * FROM scenes ORDER BY created DESC")
             ]
 
+    def reader(self, id: str) -> SceneReader:
+        info = self.scene(id)
+        return SceneReader(
+            self.scene_path(id), json.loads(info["source_meta"]) if info.get("source_meta") else None
+        )
+
     def import_scene(self, data: bytes, name: str, job: Job) -> dict:
-        job.update(5, "خواندن تصویر ماهواره‌ای از فایل شما")
-        image = read_picture(data, scene=True)
+        # Compatibility entry point for callers with bytes; desktop uses a path.
+        temporary = self.images / f"{uuid.uuid4().hex}.upload"
+        temporary.write_bytes(data)
+        return self.import_scene_file(temporary, name, job, owned=True)
+
+    def import_scene_file(
+        self, path: Path, name: str, job: Job, *, owned: bool = False, copy: bool = False
+    ) -> dict:
+        path = Path(path).resolve()
         identifier = uuid.uuid4().hex
-        job.update(35, "ذخیرهٔ تصویر روی همین کامپیوتر")
-        image.save(self.images / f"{identifier}.png", format="PNG")
-        preview = image.copy()
-        preview.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
-        preview.save(self.images / f"{identifier}-preview.jpg", quality=90)
-        with self.connect() as db:
-            db.execute(
-                "INSERT INTO scenes VALUES(?,?,?,?,?)",
-                (
-                    identifier,
-                    Path(name.replace("\\", "/")).name[:160],
-                    image.width,
-                    image.height,
-                    time.time(),
-                ),
+        source = path
+        managed = owned
+        preview = self.images / f"{identifier}-preview.jpg"
+        committed = False
+        try:
+            before = path.stat()
+            if not path.is_file() or before.st_size < 1:
+                raise UserError("فایل تصویر خالی یا غیرقابل دسترسی است.")
+            if copy:
+                if shutil.disk_usage(self.images).free < before.st_size + 256 * 1024 * 1024:
+                    raise UserError(
+                        "برای کپی فایل فضای کافی نیست؛ گزینهٔ کپی را بردار تا فایل از مسیر اصلی خوانده شود."
+                    )
+                source = self.images / f"{identifier}.source"
+                managed = True
+                with path.open("rb") as input_file, source.open("xb") as output:
+                    copied = 0
+                    while chunk := input_file.read(4 * 1024 * 1024):
+                        job.update(copied / before.st_size * 40, "کپی مرحله‌ای فایل در فضای برنامه")
+                        output.write(chunk)
+                        copied += len(chunk)
+                if path.stat().st_mtime_ns != before.st_mtime_ns:
+                    raise UserError("فایل هنگام کپی تغییر کرد؛ دوباره بازش کن.")
+            job.update(45, "خواندن مشخصات فایل؛ ساخت نمای کلی بدون بارگذاری کامل تصویر")
+            with SceneReader(source) as reader:
+                job.update(55, f"آماده‌سازی نمای کلی {reader.width} در {reader.height} پیکسل")
+                picture = reader.read(maximum=2400)
+                notes = [*reader.notes, *picture.info.get("atlas_import_notes", [])]
+                meta = dict(reader.meta)
+                meta["preview_approximate"] = bool(picture.info.get("atlas_import_notes"))
+                width, height = reader.width, reader.height
+            job.check()
+            picture.save(preview, format="JPEG", quality=91)
+            stat = source.stat()
+            if not copy and stat.st_mtime_ns != before.st_mtime_ns:
+                raise UserError("فایل هنگام بازکردن تغییر کرد؛ دوباره تلاش کن.")
+            with self.connect() as db:
+                db.execute(
+                    "INSERT INTO scenes(id,name,width,height,created,source_path,source_meta,source_size,source_mtime,storage) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        identifier,
+                        Path(name.replace("\\", "/")).name[:160],
+                        width,
+                        height,
+                        time.time(),
+                        str(source),
+                        json.dumps(meta),
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                        "managed" if managed else "linked",
+                    ),
+                )
+            committed = True
+            message = "تصویر آماده است؛ نمایش و جست‌وجو به‌صورت ناحیه‌ای انجام می‌شود. "
+            if not managed:
+                message += "فایل از مسیر اصلی خوانده می‌شود؛ آن را جابه‌جا نکن. "
+            return {"scene": self.scene(identifier), "message": message + " ".join(dict.fromkeys(notes))}
+        except (OSError, ValueError) as exc:
+            raise UserError("فایل باز نشد؛ دسترسی به دیسک، فضای آزاد و سلامت فایل را بررسی کن.") from exc
+        finally:
+            if not committed:
+                preview.unlink(missing_ok=True)
+                if managed:
+                    source.unlink(missing_ok=True)
+
+    def tile(self, id: str, level: int, x: int, y: int) -> Path:
+        info = self.scene(id)
+        self.scene_path(id)
+        max_level = max(0, math.ceil(math.log2(max(info["width"], info["height"]) / 512)))
+        if not (0 <= level <= max_level and x >= 0 and y >= 0):
+            raise UserError("کاشی تصویر معتبر نیست.")
+        span = 512 * (1 << level)
+        x0, y0 = x * span, y * span
+        if x0 >= info["width"] or y0 >= info["height"]:
+            raise UserError("کاشی بیرون تصویر است.")
+        path = self.tiles / f"{id}-{level}-{x}-{y}.jpg"
+        with self.tile_gate:
+            if not path.is_file():
+                with self.reader(id) as reader:
+                    image = reader.read(
+                        (x0, y0, min(x0 + span, info["width"]), min(y0 + span, info["height"])), 512
+                    )
+                temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+                try:
+                    image.save(temporary, format="JPEG", quality=92)
+                    temporary.replace(path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                entries = list(self.tiles.glob("*.jpg"))
+                if len(entries) > 2048:
+                    for old in sorted(entries, key=lambda p: p.stat().st_mtime)[: len(entries) - 2000]:
+                        old.unlink(missing_ok=True)
+        return path
+
+    def annotated(self, run: dict) -> Image.Image:
+        from PIL import ImageDraw, PngImagePlugin
+
+        info = self.scene(run["scene"])
+        with self.reader(info["id"]) as reader:
+            picture = reader.read(maximum=4096)
+        sx, sy = picture.width / info["width"], picture.height / info["height"]
+        draw = ImageDraw.Draw(picture)
+        for item in run["detections"]:
+            b = item["bbox"]
+            x, y = b["x"] * sx, b["y"] * sy
+            draw.rectangle(
+                (x, y, (b["x"] + b["width"]) * sx, (b["y"] + b["height"]) * sy), outline="#89ed97", width=2
             )
-        return {
-            "scene": self.scene(identifier),
-            "message": "تصویر شما آماده است. حالا نمونه‌های هدف را مشخص کنید. "
-            + " ".join(image.info.get("atlas_import_notes", [])),
-        }
+            draw.text(
+                (x + 3, y + 3), str(item["index"] + 1), fill="white", stroke_fill="#193825", stroke_width=1
+            )
+        metadata = PngImagePlugin.PngInfo()
+        metadata.add_text("atlas_original_size", json.dumps([info["width"], info["height"]]))
+        metadata.add_text("atlas_pixel_scale", json.dumps([sx, sy]))
+        picture.info["atlas_png_metadata"] = metadata
+        return picture
 
     def concepts(self) -> list[dict]:
         with self.connect() as db:
@@ -200,6 +344,7 @@ class Workshop:
         label: int,
         scene: str | None = None,
         bbox: dict | None = None,
+        source_size: tuple[int, int] | None = None,
     ) -> dict:
         self.concept(concept)
         if label not in (0, 1):
@@ -207,7 +352,7 @@ class Workshop:
         if len(self.examples(concept)) >= MAX_EXAMPLES:
             raise UserError("برای هر موضوع حداکثر ۵۰۰ نمونه مجاز است.")
         identifier = uuid.uuid4().hex
-        original_size = picture.size
+        original_size = source_size or picture.size
         picture = picture.copy()
         picture.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
         picture.save(self.crops / f"{identifier}.png", format="PNG")
@@ -230,9 +375,15 @@ class Workshop:
     def add_box(self, concept: str, scene: str, bbox: dict, label: int) -> dict:
         information = self.scene(scene)
         box = box_tuple(bbox, information["width"], information["height"])
-        with Image.open(self.scene_path(scene)) as image:
-            crop = image.crop(box).convert("RGB")
-        return self._add_example(concept, crop, label, scene, rect_dict(box))
+        if (box[2] - box[0]) * (box[3] - box[1]) > 16_000_000 or max(
+            box[2] - box[0], box[3] - box[1]
+        ) > 16000:
+            raise UserError("کادر نمونه خیلی بزرگ است؛ بزرگ‌نمایی کن و دور یک نمونهٔ کوچک‌تر کادر بکش.")
+        with self.reader(scene) as reader:
+            crop = reader.read(box, 1024)
+        return self._add_example(
+            concept, crop, label, scene, rect_dict(box), (box[2] - box[0], box[3] - box[1])
+        )
 
     def add_file(self, concept: str, data: bytes, label: int) -> dict:
         picture = read_picture(data)
@@ -375,6 +526,7 @@ class Workshop:
         thorough: bool,
         job: Job,
     ) -> dict:
+        self.scene_path(scene)
         plan = self.plan(scene, width, height, scope, thorough)
         if not plan["allowed"]:
             raise UserError(
@@ -392,7 +544,9 @@ class Workshop:
         elif len(text.strip()) < 3:
             raise UserError("یک هدف آموزش‌دیده انتخاب کن یا توضیحی برای جست‌وجو بنویس.")
         windows = plan["boxes"]
-        key = hashlib.sha256(json.dumps([scene, windows, INDEX_VERSION]).encode()).hexdigest()
+        key = hashlib.sha256(
+            json.dumps([scene, windows, INDEX_VERSION, "window-reader-v1"]).encode()
+        ).hexdigest()
         cached = self.cache / f"{key}.npy"
         features = None
         if cached.is_file():
@@ -404,13 +558,13 @@ class Workshop:
                 pass
         if features is None:
             chunks = []
-            with Image.open(self.scene_path(scene)) as original:
+            with self.reader(scene) as original:
                 for start in range(0, len(windows), 24):
                     job.update(
                         3 + start / len(windows) * 86,
                         f"بررسی تصویر: {min(start + 24, len(windows))} از {len(windows)} پنجره",
                     )
-                    pictures = [original.crop(box).convert("RGB") for box in windows[start : start + 24]]
+                    pictures = [original.read(box, 1024) for box in windows[start : start + 24]]
                     vectors = np.asarray(self.engine.images(pictures), dtype=np.float32)
                     if vectors.shape != (len(pictures), 512) or not np.isfinite(vectors).all():
                         raise ValueError("Invalid search embeddings")
@@ -481,8 +635,8 @@ class Workshop:
             raise UserError("کادر نتیجه پیدا نشد.")
         scene = self.scene(result["scene"])
         box = box_tuple(result["detections"][index]["bbox"], scene["width"], scene["height"])
-        with Image.open(self.scene_path(scene["id"])) as image:
-            return image.crop(box).convert("RGB")
+        with self.reader(scene["id"]) as reader:
+            return reader.read(box, 1024)
 
     def export_training(self, concept: str) -> bytes:
         current = self.concept(concept)

@@ -18,7 +18,15 @@ if __name__ == "__main__":
         report = root / "startup-error.log"
         report.write_text(traceback.format_exc(), encoding="utf-8")
         if (
-            not any(flag in sys.argv for flag in ("--smoke-test", "--ai-smoke-test", "--formats-smoke-test"))
+            not any(
+                flag in sys.argv
+                for flag in (
+                    "--smoke-test",
+                    "--ai-smoke-test",
+                    "--formats-smoke-test",
+                    "--large-files-smoke-test",
+                )
+            )
             and os.name == "nt"
         ):
             import ctypes

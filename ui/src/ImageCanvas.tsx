@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Focus, Hand, ImagePlus, Minus, Plus, ScanLine, SquareDashed, SquareMinus, SquarePlus } from 'lucide-react';
 import { Detection, Example, fa, Rect, Scene } from './offline-api';
 
@@ -12,12 +12,17 @@ export default function ImageCanvas({ scene, tool, setTool, examples, detections
   const current = useRef(transform); current.current = transform;
   const [draft, setDraft] = useState<Rect | null>(null);
   const [fullLoaded, setFullLoaded] = useState(false);
+  const [bounds, setBounds] = useState({ width: 1000, height: 700 });
+  const [tileView, setTileView] = useState(transform);
+  const minimumZoom = useRef(.000001);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
   const drag = useRef<{ startX: number; startY: number; transform: Transform; pan: boolean } | null>(null);
   const fit = () => {
     if (!scene || !viewport.current) return;
     const { width, height } = viewport.current.getBoundingClientRect();
     const scale = Math.min((width-60)/scene.width, (height-60)/scene.height, 2);
+    minimumZoom.current = scale / 8;
+    setBounds({ width, height });
     setTransform({ scale, x: (width-scene.width*scale)/2, y: (height-scene.height*scale)/2 });
   };
   useEffect(() => {
@@ -31,7 +36,7 @@ export default function ImageCanvas({ scene, tool, setTool, examples, detections
   const zoom = (factor: number, x?: number, y?: number) => {
     const bounds = viewport.current?.getBoundingClientRect(); if (!bounds) return;
     const anchorX = x ?? bounds.width/2, anchorY = y ?? bounds.height/2;
-    setTransform(previous => { const scale = Math.max(.005, Math.min(16, previous.scale*factor)); const ratio = scale/previous.scale;
+    setTransform(previous => { const scale = Math.max(minimumZoom.current, Math.min(16, previous.scale*factor)); const ratio = scale/previous.scale;
       return { scale, x: anchorX-(anchorX-previous.x)*ratio, y: anchorY-(anchorY-previous.y)*ratio }; });
   };
   useEffect(() => {
@@ -46,6 +51,26 @@ export default function ImageCanvas({ scene, tool, setTool, examples, detections
     const scale = Math.min(6, (bounds.width-140)/focus.width, (bounds.height-140)/focus.height);
     setTransform({ scale, x: bounds.width/2-(focus.x+focus.width/2)*scale, y: bounds.height/2-(focus.y+focus.height/2)*scale });
   }, [focus]);
+  useEffect(() => {
+    const timer = setTimeout(() => setTileView(transform), 140);
+    return () => clearTimeout(timer);
+  }, [transform]);
+  const tiles = useMemo(() => {
+    if (!scene) return [];
+    const maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(scene.width, scene.height) / 512)));
+    const level = Math.max(0, Math.min(maxLevel, Math.floor(Math.log2(1 / tileView.scale))));
+    const span = 512 * 2 ** level;
+    const left = Math.max(0, Math.floor(-tileView.x / tileView.scale / span));
+    const top = Math.max(0, Math.floor(-tileView.y / tileView.scale / span));
+    const right = Math.min(Math.ceil(scene.width / span), Math.ceil((bounds.width - tileView.x) / tileView.scale / span));
+    const bottom = Math.min(Math.ceil(scene.height / span), Math.ceil((bounds.height - tileView.y) / tileView.scale / span));
+    const result = [];
+    for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
+      if (result.length >= 64) return result;
+      result.push({ key: `${scene.id}-${level}-${x}-${y}`, url: `/api/workspace/scenes/${scene.id}/tiles/${level}/${x}/${y}`, x: x * span, y: y * span, width: Math.min(span, scene.width - x * span), height: Math.min(span, scene.height - y * span) });
+    }
+    return result;
+  }, [scene?.id, tileView, bounds]);
   const pixel = (clientX: number, clientY: number, value = current.current) => {
     const bounds = viewport.current!.getBoundingClientRect();
     return [Math.max(0, Math.min(scene!.width, (clientX-bounds.left-value.x)/value.scale)), Math.max(0, Math.min(scene!.height, (clientY-bounds.top-value.y)/value.scale))];
@@ -70,7 +95,8 @@ export default function ImageCanvas({ scene, tool, setTool, examples, detections
       {!scene ? <div className="canvas-empty"><div className="empty-orbit"><ScanLine size={50} strokeWidth={1} /><span /><i /></div><h2>تصویر خودت، جست‌وجوی خودت</h2><p>یک تصویر ماهواره‌ای وارد کن و با چند کادر، هدف را به برنامه یاد بده.</p><button className="primary-button" onPointerDown={event => event.stopPropagation()} onClick={onImport}><ImagePlus size={18} />انتخاب تصویر ماهواره‌ای</button><small>ECW · GeoTIFF · JP2 · HEIC · PNG <b>کاملاً روی همین کامپیوتر</b></small></div>
       : <div className="scene-layer" style={{ width: scene.width, height: scene.height, transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})` }}>
         <img className="scene-preview" src={scene.preview_url} alt="پیش‌نمایش تصویر ماهواره‌ای" draggable={false} width={scene.width} height={scene.height} />
-        <img className={`scene-full ${fullLoaded ? 'loaded' : ''}`} src={`/api/workspace/scenes/${scene.id}/full`} alt={scene.name} draggable={false} width={scene.width} height={scene.height} onLoad={() => setFullLoaded(true)} />
+        <img className={`scene-full ${fullLoaded ? 'loaded' : ''}`} src={scene.preview_url} alt={scene.name} draggable={false} width={scene.width} height={scene.height} onLoad={() => setFullLoaded(true)} />
+        <div className="scene-tiles">{tiles.map(tile => <img key={tile.key} src={tile.url} alt="" draggable={false} style={{ left: tile.x, top: tile.y, width: tile.width, height: tile.height }} />)}</div>
         <svg className="annotation-layer" width={scene.width} height={scene.height} viewBox={`0 0 ${scene.width} ${scene.height}`}>
           {examples.filter(item => item.scene === scene.id && item.bbox).map(item => <rect key={item.id} {...item.bbox!} className={item.label ? 'example-positive' : 'example-negative'} strokeWidth={1.5/transform.scale}><title>{item.label ? 'نمونهٔ درست' : 'نمونهٔ غلط'}</title></rect>)}
           {detections.map(item => <g key={item.index} className={`detection-box ${selected === item.index ? 'selected' : ''}`} onPointerDown={event => { if (tool === 'pan') event.stopPropagation(); }} onClick={event => { if (tool === 'pan') { event.stopPropagation(); onSelect(item.index); } }}><rect {...item.bbox} strokeWidth={(selected === item.index ? 3 : 1.5)/transform.scale} /><rect x={item.bbox.x} y={Math.max(0,item.bbox.y-21/transform.scale)} width={55/transform.scale} height={21/transform.scale} className="detection-tag" /><text x={item.bbox.x+5/transform.scale} y={Math.max(14/transform.scale,item.bbox.y-6/transform.scale)} fontSize={11/transform.scale} direction="ltr">{fa(item.index+1)} · {fa(item.score,2)}</text></g>)}

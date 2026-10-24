@@ -4,7 +4,9 @@ import csv
 import hmac
 import io
 import secrets
+import shutil
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -12,7 +14,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, ImageDraw
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -21,7 +23,9 @@ from .engine import Engine
 from .errors import UserError
 from .image_io import format_support
 from .jobs import Jobs
-from .workshop import MAX_SCENE_BYTES, Workshop
+from .workshop import Workshop
+
+MAX_TRAINING_ARCHIVE_BYTES = 150 * 1024 * 1024
 
 
 class Rect(BaseModel):
@@ -105,6 +109,11 @@ def create_app(
 
     app = FastAPI(title="Atlas Offline", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.token, app.state.services = token, services
+    app.state.desktop_channel_script = b""
+
+    @app.get("/desktop-channel.js")
+    def desktop_channel():
+        return Response(app.state.desktop_channel_script, media_type="application/javascript")
 
     @app.middleware("http")
     async def local_only(request, call_next):
@@ -140,6 +149,7 @@ def create_app(
         return {
             "version": __version__,
             "offline": True,
+            "desktop_picker": bool(app.state.desktop_channel_script),
             "image_formats": format_support(),
             "models": services.engine.status(),
             "scenes": services.workshop.scenes(),
@@ -149,10 +159,31 @@ def create_app(
 
     @app.post("/api/workspace/scenes")
     async def add_scene(request: Request, name: str = "satellite-image"):
-        data = await upload(request, MAX_SCENE_BYTES)
-        return services.jobs.submit(
-            "import-scene", lambda job: services.workshop.import_scene(data, name, job)
-        )
+        services.idle()
+        path = services.workshop.images / f"{uuid.uuid4().hex}.upload"
+        submitted = False
+        try:
+            size, checked = 0, 0
+            with path.open("xb") as output:
+                async for chunk in request.stream():
+                    if size >= checked:
+                        if shutil.disk_usage(path.parent).free < len(chunk) + 256 * 1024 * 1024:
+                            raise UserError(
+                                "فضای کافی برای ذخیرهٔ فایل نیست؛ در نسخهٔ ویندوز فایل را مستقیم باز کن."
+                            )
+                        checked = size + 32 * 1024 * 1024
+                    output.write(chunk)
+                    size += len(chunk)
+            if not size:
+                raise UserError("فایلی ارسال نشده است.")
+            result = services.jobs.submit(
+                "import-scene", lambda job: services.workshop.import_scene_file(path, name, job, owned=True)
+            )
+            submitted = True
+            return result
+        finally:
+            if not submitted:
+                path.unlink(missing_ok=True)
 
     @app.get("/api/workspace/scenes/{id}/preview")
     def preview(id: str):
@@ -161,7 +192,11 @@ def create_app(
 
     @app.get("/api/workspace/scenes/{id}/full")
     def full_image(id: str):
-        return FileResponse(services.workshop.scene_path(id), media_type="image/png")
+        return preview(id)
+
+    @app.get("/api/workspace/scenes/{id}/tiles/{level}/{x}/{y}")
+    def scene_tile(id: str, level: int, x: int, y: int):
+        return FileResponse(services.workshop.tile(id, level, x, y), media_type="image/jpeg")
 
     @app.post("/api/workspace/concepts")
     def new_concept(body: ConceptName):
@@ -268,26 +303,9 @@ def create_app(
     @app.get("/api/workspace/runs/{id}/annotated")
     def export_annotated(id: str):
         run = services.workshop.run(id)
-        with Image.open(services.workshop.scene_path(run["scene"])) as original:
-            picture = original.copy()
-        draw = ImageDraw.Draw(picture)
-        width = max(2, round(max(picture.size) / 700))
-        for entry in run["detections"]:
-            box = entry["bbox"]
-            draw.rectangle(
-                (box["x"], box["y"], box["x"] + box["width"], box["y"] + box["height"]),
-                outline="#89ed97",
-                width=width,
-            )
-            draw.text(
-                (box["x"] + 3, box["y"] + 3),
-                str(entry["index"] + 1),
-                fill="#ffffff",
-                stroke_fill="#193825",
-                stroke_width=2,
-            )
+        picture = services.workshop.annotated(run)
         stream = io.BytesIO()
-        picture.save(stream, format="PNG")
+        picture.save(stream, format="PNG", pnginfo=picture.info.get("atlas_png_metadata"))
         return Response(
             stream.getvalue(),
             media_type="image/png",
@@ -304,7 +322,7 @@ def create_app(
 
     @app.post("/api/workspace/training/import")
     async def import_training(request: Request):
-        data = await upload(request, MAX_SCENE_BYTES)
+        data = await upload(request, MAX_TRAINING_ARCHIVE_BYTES)
         return services.jobs.submit(
             "import-training", lambda job: services.workshop.import_training(data, job)
         )

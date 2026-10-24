@@ -55,3 +55,85 @@ def read_ecw(data: bytes, maximum_pixels: int) -> Image.Image:
         raise UserError(
             "فایل ECW خوانده نشد؛ فایل ممکن است ناقص باشد یا از گونهٔ کدگذاری پشتیبانی‌نشده استفاده کند. این نسخه روی ECW نسخهٔ ۲ و ۳ با تصویر RGB آزمایش شده است."
         ) from exc
+
+
+def check_scene_index_budget(path: Path):
+    """Inspect bounded header records before the native decoder allocates its index.
+
+    ecw2tiff currently materializes block offsets; large file size alone does
+    not imply a large index, but an enormous index needs a different reader.
+    """
+    import struct
+
+    budget = 128 * 1024 * 1024
+    with path.open("rb") as file:
+        size = path.stat().st_size
+
+        def at(position, length):
+            if position < 0 or length > 1024 * 1024 or position + length > size:
+                raise UserError("ساختار ECW معتبر نیست یا فرادادهٔ آن بیش از بودجهٔ خواننده است.")
+            file.seek(position)
+            result = file.read(length)
+            if len(result) != length:
+                raise UserError("فرادادهٔ ECW ناقص است.")
+            return result
+
+        header = at(0, 22)
+        if header[0] == ord("e"):
+            levels, bands = header[4], int.from_bytes(header[14:16], "big")
+            bx, by = struct.unpack(">HH", header[18:22])
+            position = 89 if header[1] > 1 else 22
+            multiplier = 64  # conservative peak of packed/raw/converted tables
+        else:
+            image_header, codestream = None, None
+
+            def boxes(start, end):
+                count = 0
+                while start + 8 <= end:
+                    count += 1
+                    if count > 4096:
+                        raise UserError("تعداد رکوردهای ECW بیش از بودجهٔ خواننده است.")
+                    raw = at(start, 8)
+                    length, kind = struct.unpack(">I4s", raw)
+                    prefix = 8
+                    if length == 1:
+                        length = int.from_bytes(at(start + 8, 8), "big")
+                        prefix = 16
+                    elif length == 0:
+                        length = end - start
+                    if length < prefix or start + length > end:
+                        raise UserError("ساختار ECW معتبر نیست.")
+                    yield kind, start + prefix, start + length
+                    start += length
+
+            for kind, start, end in boxes(0, size):
+                if kind == b"ecwh":
+                    for child, first, last in boxes(start, end):
+                        if child == b"ihdr":
+                            image_header = at(first, last - first)
+                elif kind == b"ecwc":
+                    codestream = start
+                elif kind == b"gtif":
+                    at(start, end - start)  # native reader loads this metadata
+            if image_header is None or len(image_header) < 22 or codestream is None:
+                raise UserError("فرادادهٔ ECW کامل نیست.")
+            levels = image_header[13]
+            bands = int.from_bytes(image_header[11:13], "big")
+            bx, by = struct.unpack(">HH", image_header[15:19])
+            position, multiplier = codestream, 32
+        if not (1 <= levels <= 32 and 1 <= bands <= 16 and bx and by):
+            raise UserError("این ساختار ECW در خوانندهٔ فعلی پشتیبانی نمی‌شود.")
+        total = 0
+        for _ in range(levels):
+            record = at(position, 9 + 4 * bands)
+            width, height = struct.unpack(">II", record[1:9])
+            total += ((width + bx - 1) // bx) * ((height + by - 1) // by)
+            position += len(record)
+            if (total + 1) * multiplier > budget:
+                raise UserError(
+                    "جدول بلوک‌های این ECW بیش از بودجهٔ حافظهٔ خوانندهٔ فعلی است؛ از GeoTIFF کاشی‌بندی‌شده یا فایل‌های بخش‌بندی‌شده استفاده کن."
+                )
+        if header[0] == ord("e"):
+            packed = int.from_bytes(at(position, 4), "big")
+            if packed > budget // 4:
+                raise UserError("جدول فشردهٔ این ECW برای خوانندهٔ فعلی بیش از حد بزرگ است.")

@@ -87,7 +87,7 @@ def main():
             csv = Path(download.value.path()).read_text(encoding="utf-8-sig")
             assert "x,y,width,height,model_score" in csv and len(csv.strip().splitlines()) > 1
             with page.expect_download() as download:
-                page.get_by_role("button", name="تصویر نشانه‌گذاری‌شده", exact=True).click()
+                page.get_by_role("button", name="پیش‌نمایش نشانه‌گذاری‌شده", exact=True).click()
             assert Image.open(download.value.path()).size == (256, 192)
             page.locator(".feedback-actions").first.get_by_role("button", name="غلط", exact=True).click()
             expect(page.get_by_role("button", name="به‌روزرسانی آموزش", exact=True)).to_be_enabled()

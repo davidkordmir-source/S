@@ -29,6 +29,9 @@ def main() -> None:
         help="Validate bundled image decoders and actual ECW files, then exit",
     )
     parser.add_argument("--port", type=int, default=0, help="Loopback port (default: choose an unused port)")
+    parser.add_argument(
+        "--large-files-smoke-test", action="store_true", help="Check sparse BigTIFF addressing beyond 1 TiB"
+    )
     args = parser.parse_args()
     root = data_directory()
     root.mkdir(parents=True, exist_ok=True)
@@ -43,6 +46,11 @@ def main() -> None:
         from .validation import validate_packaged_formats
 
         validate_packaged_formats(root)
+        return
+    if args.large_files_smoke_test:
+        from .large_validation import validate_large_files
+
+        validate_large_files(root)
         return
     if args.ai_smoke_test:
         from .validation import validate_packaged_ai
@@ -66,8 +74,9 @@ def main() -> None:
         server.run(sockets=[listener])
         return
     try:
-        from PySide6.QtCore import QTimer, QUrl
+        from PySide6.QtCore import QFile, QIODevice, QTimer, QUrl
         from PySide6.QtGui import QColor
+        from PySide6.QtWebChannel import QWebChannel
         from PySide6.QtWebEngineCore import (
             QWebEnginePage,
             QWebEngineProfile,
@@ -138,6 +147,17 @@ def main() -> None:
     page.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
     page.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
     view.setPage(page)
+    from .desktop_bridge import FileBridge
+
+    script = QFile(":/qtwebchannel/qwebchannel.js")
+    if not script.open(QIODevice.OpenModeFlag.ReadOnly):
+        raise RuntimeError("The native file selection channel is unavailable")
+    app.state.desktop_channel_script = bytes(script.readAll())
+    script.close()
+    bridge = FileBridge(app.state.services, window)
+    channel = QWebChannel(page)
+    channel.registerObject("atlasFiles", bridge)
+    page.setWebChannel(channel)
     window.setCentralWidget(view)
     smoke_passed = []
 
@@ -151,7 +171,7 @@ def main() -> None:
                 application.quit()
 
             page.runJavaScript(
-                "Boolean(document.querySelector('h1') && document.querySelector('.scene-viewport') && !document.querySelector('.notice.error'))",
+                "Boolean(window.__atlasNativeReady && document.querySelector('h1') && document.querySelector('.scene-viewport') && !document.querySelector('.notice.error'))",
                 received,
             )
 

@@ -25,6 +25,7 @@ def validate_packaged_formats(root: Path) -> dict:
     from .ecw_reader import available
     from .image_io import read_picture
     from .raster_reader import bundle_directory
+    from .scene_source import SceneReader
 
     data = (
         Path(sys._MEIPASS) / "validation-data"
@@ -56,6 +57,18 @@ def validate_packaged_formats(root: Path) -> dict:
             image = read_picture((data / "rasters" / name).read_bytes(), scene=True)
             assert image.mode == "RGB" and min(image.size) > 0 and np.asarray(image).size > 0
             files.append(name)
+        # Validate the actual file-backed path as well as bounded sample decoding.
+        for filename in files:
+            group = (
+                "ecw"
+                if filename.endswith(".ecw")
+                else "formats"
+                if (data / "formats" / filename).exists()
+                else "rasters"
+            )
+            with SceneReader(data / group / filename) as reader:
+                image = reader.read(maximum=1024)
+                assert image.mode == "RGB" and min(image.size) > 0
         assert not attempts
         report = dict(
             ecw_decoder="ecw2tiff 0.1.1 (MIT)",
