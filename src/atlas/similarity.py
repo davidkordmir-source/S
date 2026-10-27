@@ -94,7 +94,7 @@ class Similarity:
         info = self.workshop.scene(scene)
         box = box_tuple(bbox, info["width"], info["height"])
         with self.workshop.reader(scene) as reader:
-            picture = reader.read(box, 1024)
+            picture = reader.read(box, 1024, exact=True)
         return self.add_reference(
             picture, "نمونه از تصویر", scene, rect_dict(box), (box[2] - box[0], box[3] - box[1])
         )
@@ -140,7 +140,7 @@ class Similarity:
             columns=columns,
             windows=columns * rows,
             feature=INDEX_VERSION,
-            algorithm="reference-v2",
+            algorithm="reference-v3",
         )
         scan = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         with self.workshop.connect() as db:
@@ -234,7 +234,9 @@ class Similarity:
                     )
                 x0, y0 = box[0] + tile % columns * span, box[1] + tile // columns * span
                 x1, y1 = min(box[2], x0 + span + margin), min(box[3], y0 + span + margin)
-                picture = reader.read((x0, y0, x1, y1), max(1, math.ceil(max(x1 - x0, y1 - y0) / factor)))
+                picture = reader.read(
+                    (x0, y0, x1, y1), max(1, math.ceil(max(x1 - x0, y1 - y0) / factor)), exact=True
+                )
                 image = np.asarray(picture)
                 # Account for the last partial tile's rounded output dimensions.
                 sx, sy = (x1 - x0) / picture.width, (y1 - y0) / picture.height
@@ -287,7 +289,9 @@ class Similarity:
                     semantic = np.ones(len(chunk), np.float32)
                     if reference_vectors is not None:
                         vectors = np.asarray(
-                            self.workshop.engine.images([reader.read(b, 384) for b, _, _ in chunk]),
+                            self.workshop.engine.images(
+                                [reader.read(b, 384, exact=True) for b, _, _ in chunk]
+                            ),
                             np.float32,
                         )
                         if vectors.shape != (len(chunk), 512) or not np.isfinite(vectors).all():

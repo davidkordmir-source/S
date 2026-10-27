@@ -220,3 +220,18 @@ def test_ecw_v1_header_is_recognized_and_windowed(tmp_path):
     with SceneReader(source) as reader:
         assert reader.meta["version"] == 1
         assert reader.read((100, 100, 164, 164)).getextrema() == ((0, 0),) * 3
+
+
+def test_exact_search_reads_never_use_coarse_overview(tmp_path):
+    source = tmp_path / "no-overviews.tif"
+    make_sparse_scene(source, 200 * 1024 * 1024)
+    with SceneReader(source) as reader:
+        preview = reader.read(maximum=512)
+        assert preview.info.get("atlas_import_notes")
+        accurate = reader.read(maximum=512, exact=True)
+        assert not accurate.info.get("atlas_import_notes")
+        # The red real-data tile falls between the coarse overview's samples.
+        import numpy as np
+
+        assert np.asarray(accurate)[:, :, 0].max() > 200
+        assert np.asarray(preview)[:, :, 0].max() == 0

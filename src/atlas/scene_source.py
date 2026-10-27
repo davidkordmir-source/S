@@ -111,10 +111,15 @@ class SceneReader:
             self.close()
             raise
         except BaseException as exc:
-            logging.getLogger(__name__).warning('Scene reader failed for %s', self.path, exc_info=True)
+            logging.getLogger(__name__).warning("Scene reader failed for %s", self.path, exc_info=True)
             self.close()
-            if any(message in str(exc).lower() for message in ('no space left', 'os error 112', 'not enough space')):
-                raise UserError('فضای دیسک برای فهرست ECW کافی نیست؛ در درایو محل داده‌های برنامه فضای آزاد ایجاد کن و دوباره باز کن.') from exc
+            if any(
+                message in str(exc).lower()
+                for message in ("no space left", "os error 112", "not enough space")
+            ):
+                raise UserError(
+                    "فضای دیسک برای فهرست ECW کافی نیست؛ در درایو محل داده‌های برنامه فضای آزاد ایجاد کن و دوباره باز کن."
+                ) from exc
             raise UserError(
                 "فایل تصویر باز نشد؛ فرمت، سلامت فایل و دسترسی به مسیر اصلی را بررسی کن."
             ) from exc
@@ -234,7 +239,9 @@ class SceneReader:
             "overviews": self.overviews,
         }
 
-    def read(self, box: tuple[int, int, int, int] | None = None, maximum: int = 1024) -> Image.Image:
+    def read(
+        self, box: tuple[int, int, int, int] | None = None, maximum: int = 1024, *, exact: bool = False
+    ) -> Image.Image:
         box = box or (0, 0, self.width, self.height)
         x0, y0, x1, y1 = box
         if not (
@@ -248,7 +255,7 @@ class SceneReader:
             if self.ecw is not None
             else max([1, *getattr(self, "overviews", [])])
         )
-        if self.picture is None and width * height / (factor * factor) > 64_000_000:
+        if not exact and self.picture is None and width * height / (factor * factor) > 64_000_000:
             return self._coarse(box, maximum)
         if self.picture is not None:
             result = self.picture.crop(box)
