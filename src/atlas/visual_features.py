@@ -81,7 +81,9 @@ def positions(length, step):
     return sorted({*range(0, max(1, length - BLOCK + 1), step), max(0, length - BLOCK)})
 
 
-def dense_proposals(picture, engine, references, width, height, scales, rotate, check, sizes=None):
+def dense_proposals(
+    picture, engine, references, width, height, scales, rotate, check, sizes=None, feature_provider=None
+):
     """DINO proposal path independent of RGB/template gates.
 
     Features are bounded to one 448×448 block. Overlap covers complete target
@@ -117,7 +119,15 @@ def dense_proposals(picture, engine, references, width, height, scales, rotate, 
                 (left / ratio, top / ratio, (left + block_width) / ratio, (top + block_height) / ratio),
                 Image.Resampling.BICUBIC,
             )
-            grid = engine.details([prepared])[0]["grid"]
+            features = (
+                feature_provider(
+                    prepared,
+                    (left / ratio, top / ratio, (left + block_width) / ratio, (top + block_height) / ratio),
+                )
+                if feature_provider
+                else engine.details([prepared])[0]
+            )
+            grid = features["grid"]
             if not np.any(grid):
                 continue
             integral = np.pad(grid.cumsum(axis=0).cumsum(axis=1), ((1, 0), (1, 0), (0, 0)))
@@ -162,7 +172,7 @@ def structural(picture):
     return cv2.magnitude(dx, dy)
 
 
-def appearance_scores(picture, sample, angles):
+def appearance_scores(picture, sample, angles, foreground=None):
     image = np.asarray(picture.convert("RGB"))
     edges = structural(image)
     best = (0.0, 0.0, 0)
@@ -171,17 +181,24 @@ def appearance_scores(picture, sample, angles):
             picture.size, Image.Resampling.BICUBIC
         )
         template = np.asarray(rotated)
+        valid = None
+        if foreground is not None:
+            valid = np.asarray(
+                Image.fromarray(foreground)
+                .rotate(angle, resample=Image.Resampling.NEAREST, expand=True)
+                .resize(picture.size, Image.Resampling.NEAREST)
+            )
         constant = template.astype(np.float32).std(axis=(0, 1)).max() < 3
         rgb = float(
-            cv2.matchTemplate(image, template, cv2.TM_SQDIFF_NORMED if constant else cv2.TM_CCOEFF_NORMED)[
-                0, 0
-            ]
+            cv2.matchTemplate(
+                image, template, cv2.TM_SQDIFF_NORMED if constant else cv2.TM_CCOEFF_NORMED, mask=valid
+            )[0, 0]
         )
         if constant:
             rgb = 1 - rgb
         template_edges = structural(template)
         edge = (
-            float(cv2.matchTemplate(edges, template_edges, cv2.TM_CCOEFF_NORMED)[0, 0])
+            float(cv2.matchTemplate(edges, template_edges, cv2.TM_CCOEFF_NORMED, mask=valid)[0, 0])
             if template_edges.std() > 1e-3
             else 0.0
         )

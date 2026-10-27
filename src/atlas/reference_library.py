@@ -18,6 +18,13 @@ class ReferenceLibrary:
                 CREATE TABLE IF NOT EXISTS reference_members(target TEXT REFERENCES reference_groups(id) ON DELETE CASCADE,reference TEXT REFERENCES image_references(id),enabled INTEGER NOT NULL DEFAULT 1,position INTEGER,digest TEXT,PRIMARY KEY(target,reference));
                 CREATE TABLE IF NOT EXISTS similarity_meta(key TEXT PRIMARY KEY,value TEXT);
             """)
+            columns = {r[1] for r in db.execute("PRAGMA table_info(reference_members)")}
+            for column, kind in [
+                ("label", "INTEGER NOT NULL DEFAULT 1"),
+                ("partition", 'TEXT NOT NULL DEFAULT "train"'),
+            ]:
+                if column not in columns:
+                    db.execute(f"ALTER TABLE reference_members ADD COLUMN {column} {kind}")
             if not db.execute("SELECT 1 FROM similarity_meta WHERE key='groups-v1'").fetchone():
                 # Existing unrelated screenshots must never become one training target.
                 for row in db.execute("SELECT id,name,created FROM image_references").fetchall():
@@ -25,7 +32,10 @@ class ReferenceLibrary:
                     db.execute(
                         "INSERT INTO reference_groups VALUES(?,?,?)", (target, row["name"], row["created"])
                     )
-                    db.execute("INSERT INTO reference_members VALUES(?,?,1,0,NULL)", (target, row["id"]))
+                    db.execute(
+                        "INSERT INTO reference_members(target,reference,enabled,position,digest) VALUES(?,?,1,0,NULL)",
+                        (target, row["id"]),
+                    )
                 db.execute("INSERT INTO similarity_meta VALUES('groups-v1','1')")
 
     def connect(self):
@@ -36,7 +46,7 @@ class ReferenceLibrary:
             return [
                 dict(r)
                 for r in db.execute(
-                    "SELECT g.*,COUNT(m.reference) AS total,COALESCE(SUM(m.enabled),0) AS enabled FROM reference_groups g LEFT JOIN reference_members m ON m.target=g.id GROUP BY g.id ORDER BY g.updated DESC,g.id"
+                    "SELECT g.*,COUNT(m.reference) AS total,COALESCE(SUM(CASE WHEN m.label=1 AND m.partition='train' THEN m.enabled ELSE 0 END),0) AS enabled FROM reference_groups g LEFT JOIN reference_members m ON m.target=g.id GROUP BY g.id ORDER BY g.updated DESC,g.id"
                 )
             ]
 
@@ -60,7 +70,7 @@ class ReferenceLibrary:
             if not row:
                 raise UserError("هدف تصویری پیدا نشد.")
             members = db.execute(
-                "SELECT r.*,m.enabled FROM reference_members m JOIN image_references r ON r.id=m.reference WHERE m.target=? ORDER BY m.position,r.id",
+                "SELECT r.*,m.enabled,m.label,m.partition FROM reference_members m JOIN image_references r ON r.id=m.reference WHERE m.target=? ORDER BY m.position,r.id",
                 (id,),
             ).fetchall()
         return {
@@ -89,7 +99,9 @@ class ReferenceLibrary:
             db.execute("UPDATE reference_groups SET name=?,updated=? WHERE id=?", (name, time.time(), id))
         return self.group(id)
 
-    def add(self, id, reference):
+    def add(self, id, reference, label=1, partition="train"):
+        if label not in (0, 1) or partition not in ("train", "test"):
+            raise UserError("نوع نمونه معتبر نیست.")
         self.group(id)
         self.similarity.reference(reference)
         digest = hashlib.sha256((self.similarity.folder / f"{reference}.png").read_bytes()).hexdigest()
@@ -112,13 +124,13 @@ class ReferenceLibrary:
                 "SELECT COALESCE(MAX(position),-1)+1 FROM reference_members WHERE target=?", (id,)
             ).fetchone()[0]
             db.execute(
-                "INSERT INTO reference_members VALUES(?,?,1,?,?) ON CONFLICT(target,reference) DO UPDATE SET enabled=1",
-                (id, reference, position, digest),
+                "INSERT INTO reference_members(target,reference,enabled,position,digest,label,partition) VALUES(?,?,1,?,?,?,?) ON CONFLICT(target,reference) DO UPDATE SET enabled=1,label=excluded.label,partition=excluded.partition",
+                (id, reference, position, digest, label, partition),
             )
             db.execute("UPDATE reference_groups SET updated=? WHERE id=?", (time.time(), id))
         return {**self.similarity.reference(reference), "group": id}
 
-    def change(self, id, reference, enabled=None, remove=False):
+    def change(self, id, reference, enabled=None, remove=False, label=None, partition=None):
         self.group(id)
         with self.connect() as db:
             if remove:
@@ -126,15 +138,53 @@ class ReferenceLibrary:
                     "DELETE FROM reference_members WHERE target=? AND reference=?", (id, reference)
                 ).rowcount
             else:
+                fields = []
+                values = []
+                if enabled is not None:
+                    fields.append("enabled=?")
+                    values.append(int(enabled))
+                if label is not None:
+                    if label not in (0, 1):
+                        raise UserError("برچسب نمونه معتبر نیست.")
+                    fields.append("label=?")
+                    values.append(label)
+                if partition is not None:
+                    if partition not in ("train", "test"):
+                        raise UserError("کاربرد نمونه معتبر نیست.")
+                    fields.append("partition=?")
+                    values.append(partition)
+                if not fields:
+                    raise UserError("تغییری برای نمونه مشخص نشده است.")
                 changed = db.execute(
-                    "UPDATE reference_members SET enabled=? WHERE target=? AND reference=?",
-                    (int(enabled), id, reference),
+                    "UPDATE reference_members SET " + ",".join(fields) + " WHERE target=? AND reference=?",
+                    (*values, id, reference),
                 ).rowcount
             if not changed:
                 raise UserError("نمونه در این هدف پیدا نشد.")
             db.execute("UPDATE reference_groups SET updated=? WHERE id=?", (time.time(), id))
         return self.group(id)
 
-    def attach_upload(self, reference, group=None):
+    def attach_upload(self, reference, group=None, label=1, partition="train"):
         group = group or self.create(reference["name"])["id"]
-        return self.add(group, reference["id"])
+        return self.add(group, reference["id"], label, partition)
+
+    def replace(self, id, old, new):
+        self.group(id)
+        self.similarity.reference(new)
+        digest = hashlib.sha256((self.similarity.folder / f"{new}.png").read_bytes()).hexdigest()
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM reference_members WHERE target=? AND reference=?", (id, old)
+            ).fetchone()
+            if not row:
+                raise UserError("نمونه در هدف پیدا نشد.")
+            db.execute("DELETE FROM reference_members WHERE target=? AND reference=?", (id, old))
+            db.execute("DELETE FROM reference_members WHERE target=? AND reference=?", (id, new))
+            db.execute(
+                "INSERT INTO reference_members(target,reference,enabled,position,digest,label,partition) VALUES(?,?,?,?,?,?,?)",
+                (id, new, row["enabled"], row["position"], digest, row["label"], row["partition"]),
+            )
+            db.execute(
+                "UPDATE reference_feedback SET reference=? WHERE target=? AND reference=?", (new, id, old)
+            )
+            db.execute("UPDATE reference_groups SET updated=? WHERE id=?", (time.time(), id))

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Focus, Hand, ImagePlus, Minus, Plus, ScanLine, SquareDashed, SquareMinus, SquarePlus } from 'lucide-react';
 import { Detection, Example, fa, grade, Level, levels, percent, post, Rect, Scene } from './offline-api';
+import TileRenderer from './TileRenderer';
 
-export type Tool = 'pan' | 'positive' | 'negative' | 'scope' | 'reference';
+export type Tool = 'pan' | 'positive' | 'negative' | 'scope' | 'reference' | 'negative-reference';
 type Transform = { scale: number; x: number; y: number };
 type Props = { advanced?: boolean; reference?: Rect | null; referenceBoxes?: Rect[]; similarRun?: string | null; level?: Level; scene: Scene | null; tool: Tool; setTool: (tool: Tool) => void; examples: Example[]; detections: Detection[]; scope: Rect | null; focus: Rect | null; selected: number | null; busy: boolean; canAnnotate: boolean; onBox: (box: Rect) => void; onImport: () => void; onSelect: (index: number) => void };
 
@@ -14,6 +15,7 @@ export default function ImageCanvas({ advanced = true, reference, referenceBoxes
   const [visible, setVisible] = useState<Detection[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [fullLoaded, setFullLoaded] = useState(false);
+  const [gpuReady, setGpuReady] = useState(false);
   const [bounds, setBounds] = useState({ width: 1000, height: 700 });
   const [tileView, setTileView] = useState(transform);
   const minimumZoom = useRef(.000001);
@@ -109,22 +111,22 @@ export default function ImageCanvas({ advanced = true, reference, referenceBoxes
         else { const start = pixel(gesture.startX, gesture.startY, gesture.transform), end = pixel(event.clientX, event.clientY, gesture.transform); setDraft({ x: Math.min(start[0],end[0]), y: Math.min(start[1],end[1]), width: Math.abs(end[0]-start[0]), height: Math.abs(end[1]-start[1]) }); } }}
       onPointerUp={finish} onPointerCancel={() => { drag.current = null; setDraft(null); }} onPointerLeave={() => { if (!drag.current) setCursor(null); }}>
       {!scene ? <div className="canvas-empty"><div className="empty-orbit"><ScanLine size={50} strokeWidth={1} /><span /><i /></div><h2>تصویر خودت، جست‌وجوی خودت</h2><p>تصویر اصلی را باز کن؛ با یک اسکرین‌شات یا انتخاب یک قسمت، شبیه‌هایش را پیدا کن.</p><button className="primary-button" onPointerDown={event => event.stopPropagation()} onClick={onImport}><ImagePlus size={18} />انتخاب تصویر ماهواره‌ای</button><small>ECW · GeoTIFF · JP2 · HEIC · PNG <b>کاملاً روی همین کامپیوتر</b></small></div>
-      : <div className="scene-layer" style={{ width: scene.width, height: scene.height, transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})` }}>
+      : <><TileRenderer scene={scene.id} preview={scene.preview_url} width={scene.width} height={scene.height} tiles={tiles} transform={transform} ready={setGpuReady}/><div className={`scene-layer ${gpuReady ? 'gpu-active' : ''}`} style={{ width: scene.width, height: scene.height, transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})` }}>
         <img className="scene-preview" src={scene.preview_url} alt="پیش‌نمایش تصویر ماهواره‌ای" draggable={false} width={scene.width} height={scene.height} />
         <img className={`scene-full ${fullLoaded ? 'loaded' : ''}`} src={scene.preview_url} alt={scene.name} draggable={false} width={scene.width} height={scene.height} onLoad={() => setFullLoaded(true)} />
-        <div className="scene-tiles">{tiles.map(tile => <img key={tile.key} src={tile.url} alt="" draggable={false} style={{ left: tile.x, top: tile.y, width: tile.width, height: tile.height }} />)}</div>
+        <div className="scene-tiles">{!gpuReady && tiles.map(tile => <img key={tile.key} src={tile.url} alt="" draggable={false} style={{ left: tile.x, top: tile.y, width: tile.width, height: tile.height }} />)}</div>
         <svg className="annotation-layer" width={scene.width} height={scene.height} viewBox={`0 0 ${scene.width} ${scene.height}`}>
           {examples.filter(item => item.scene === scene.id && item.bbox).map(item => <rect key={item.id} {...item.bbox!} className={item.label ? 'example-positive' : 'example-negative'} strokeWidth={1.5/transform.scale}><title>{item.label ? 'نمونهٔ درست' : 'نمونهٔ غلط'}</title></rect>)}
-          {displayed.map(item => <g key={item.index} className={`detection-box ${similarRun ? `level-${(item.level ?? grade(item.score))}` : ''} ${selected === item.index ? 'selected' : ''}`} onPointerDown={event => { if (tool === 'pan') event.stopPropagation(); }} onClick={event => { if (tool === 'pan') { event.stopPropagation(); onSelect(item.index); } }}><title>{`نتیجه ${fa(item.index+1)} · ${percent(item.score)} شباهت · ${levels.find(l => l.id === (item.level ?? grade(item.score)))?.label}`}</title><rect {...item.bbox} strokeWidth={(selected === item.index ? 3 : 1.5)/transform.scale} /><rect x={item.bbox.x} y={Math.max(0,item.bbox.y-21/transform.scale)} width={92/transform.scale} height={21/transform.scale} className="detection-tag" /><text x={item.bbox.x+5/transform.scale} y={Math.max(14/transform.scale,item.bbox.y-6/transform.scale)} fontSize={11/transform.scale} direction="ltr">{fa(item.index+1)} · {similarRun ? percent(item.score) : fa(item.score,2)}</text></g>)}
+          {displayed.map(item => <g key={item.index} className={`detection-box ${similarRun ? `level-${(item.level ?? grade(item.score))}` : ''} ${selected === item.index ? 'selected' : ''}`} onPointerDown={event => { if (tool === 'pan') event.stopPropagation(); }} onClick={event => { if (tool === 'pan') { event.stopPropagation(); onSelect(item.index); } }}>{item.quad && <polygon className="geometry-quad" points={item.quad.map(p=>p.join(',')).join(' ')} strokeWidth={2/transform.scale}/>}<title>{`نتیجه ${fa(item.index+1)} · ${percent(item.score)} شباهت · ${levels.find(l => l.id === (item.level ?? grade(item.score)))?.label}`}</title><rect {...item.bbox} strokeWidth={(selected === item.index ? 3 : 1.5)/transform.scale} /><rect x={item.bbox.x} y={Math.max(0,item.bbox.y-21/transform.scale)} width={92/transform.scale} height={21/transform.scale} className="detection-tag" /><text x={item.bbox.x+5/transform.scale} y={Math.max(14/transform.scale,item.bbox.y-6/transform.scale)} fontSize={11/transform.scale} direction="ltr">{fa(item.index+1)} · {similarRun ? percent(item.score) : fa(item.score,2)}</text></g>)}
           {referenceBoxes.map((box,i) => <rect key={`ref-${i}`} {...box} className="reference-box" strokeWidth={2/transform.scale} />)}
           {reference && <rect {...reference} className="reference-box" strokeWidth={2/transform.scale} />}
           {scope && <rect {...scope} className="scope-box" strokeWidth={2/transform.scale} strokeDasharray={`${8/transform.scale} ${5/transform.scale}`} />}
           {draft && <rect {...draft} className={`draft-box ${tool}`} strokeWidth={2/transform.scale} />}
         </svg>
-      </div>}
+      </div></>}
       {similarRun && <div className="map-level-legend" aria-label="راهنمای رنگ شباهت">{levels.filter(l => level === 'all' || level === l.id).map(l => <span className={`level-${l.id}`} key={l.id}><i />{l.label} <small>{l.range}</small></span>)}</div>}
       {truncated && <div className="density-note">تعداد نتایج این نما زیاد است؛ برای دیدن جزئیات بیشتر بزرگ‌نمایی کن.</div>}
-      {scene && <div className={`canvas-instruction ${tool}`}><span />{tool === 'reference' ? 'دور قسمت مرجع کادر بکش؛ موارد مشابه همین قسمت جست‌وجو می‌شوند' : tool === 'positive' ? 'دور چیزی که می‌خواهی پیدا شود کادر بکش' : tool === 'negative' ? 'دور چیزی که هدف تو نیست کادر بکش' : tool === 'scope' ? 'بخشی از تصویر را برای جست‌وجو انتخاب کن' : 'برای جابجایی بکش؛ برای بزرگ‌نمایی از چرخ ماوس استفاده کن'}</div>}
+      {scene && <div className={`canvas-instruction ${tool}`}><span />{tool === 'negative-reference' ? 'دور چیزی که نمی‌خواهی پیدا شود کادر بکش' : tool === 'reference' ? 'دور قسمت مرجع کادر بکش؛ موارد مشابه همین قسمت جست‌وجو می‌شوند' : tool === 'positive' ? 'دور چیزی که می‌خواهی پیدا شود کادر بکش' : tool === 'negative' ? 'دور چیزی که هدف تو نیست کادر بکش' : tool === 'scope' ? 'بخشی از تصویر را برای جست‌وجو انتخاب کن' : 'برای جابجایی بکش؛ برای بزرگ‌نمایی از چرخ ماوس استفاده کن'}</div>}
     </div>
     <div className="canvas-status"><span>{scene ? <><span className="status-dot" />{scene.name}<i />{fa(scene.width)} × {fa(scene.height)} پیکسل</> : 'هنوز تصویری وارد نشده'}</span><span dir="ltr">{cursor ? `X ${fa(cursor[0])} · Y ${fa(cursor[1])}` : scene ? 'LOCAL IMAGE' : 'OFFLINE WORKSPACE'}</span></div>
   </section>;

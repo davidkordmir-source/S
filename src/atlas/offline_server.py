@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import json
 import secrets
 import shutil
 import sys
@@ -61,6 +62,8 @@ class ReferenceBox(BaseModel):
     scene: str
     bbox: Rect
     group: str | None = None
+    label: Literal[0, 1] = 1
+    partition: Literal["train", "test"] = "train"
 
 
 class ReferenceMember(BaseModel):
@@ -68,7 +71,41 @@ class ReferenceMember(BaseModel):
 
 
 class ReferenceEnabled(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    label: Literal[0, 1] | None = None
+    partition: Literal["train", "test"] | None = None
+
+
+class MaskPoint(BaseModel):
+    x: float = Field(ge=0, allow_inf_nan=False)
+    y: float = Field(ge=0, allow_inf_nan=False)
+    label: Literal[0, 1] = 1
+
+
+class MaskRequest(BaseModel):
+    points: list[MaskPoint] = Field(default_factory=list, max_length=64)
+    box: Rect | None = None
+    polygon: list[MaskPoint] = Field(default_factory=list, max_length=256)
+
+
+class ApplyMask(BaseModel):
+    reference: str
+    draft: str
+
+
+class IndexRequest(BaseModel):
+    scene: str
+    block: Literal[256, 512, 1024] = 512
+    budget_gb: float = Field(default=20, ge=1, le=4096, allow_inf_nan=False)
+
+
+class ComputeSettings(BaseModel):
+    device: Literal["auto", "cpu", "gpu"] = "auto"
+    performance: Literal["balanced", "maximum"] = "maximum"
+
+
+class TeachingVerdict(BaseModel):
+    label: Literal[0, 1]
 
 
 class SimilarSettings(BaseModel):
@@ -82,6 +119,14 @@ class SimilarSettings(BaseModel):
     broad: bool = False
     rotate: bool = True
     intelligent: bool = True
+    aerial: bool = True
+    geometry: bool = True
+    strict_geometry: bool = False
+    fine_pose: bool = True
+    adapt: bool = True
+    mode: Literal["complete", "fast"] = "complete"
+    index_block: Literal[256, 512, 1024] = 512
+    fast_regions: int = Field(default=1000, ge=10, le=100000)
 
 
 class Feedback(BaseModel):
@@ -230,13 +275,19 @@ def create_app(
         return {"references": services.workshop.similarity.references()}
 
     @app.post("/api/workspace/references")
-    async def reference_file(request: Request, name: str = "screenshot", group: str | None = None):
+    async def reference_file(
+        request: Request,
+        name: str = "screenshot",
+        group: str | None = None,
+        label: int = Query(default=1, ge=0, le=1),
+        partition: Literal["train", "test"] = "train",
+    ):
         services.idle()
         similar = services.workshop.similarity
         if group:
             similar.library.group(group)
         ref = similar.add_file(await upload(request, 15 * 1024 * 1024), name)
-        return similar.library.attach_upload(ref, group)
+        return similar.library.attach_upload(ref, group, label, partition)
 
     @app.post("/api/workspace/references/box")
     def reference_box(body: ReferenceBox):
@@ -244,7 +295,9 @@ def create_app(
         similar = services.workshop.similarity
         if body.group:
             similar.library.group(body.group)
-        return similar.library.attach_upload(similar.add_box(body.scene, body.bbox.model_dump()), body.group)
+        return similar.library.attach_upload(
+            similar.add_box(body.scene, body.bbox.model_dump()), body.group, body.label, body.partition
+        )
 
     @app.get("/api/workspace/reference-groups")
     def reference_groups():
@@ -280,7 +333,9 @@ def create_app(
     @app.patch("/api/workspace/reference-groups/{id}/members/{reference}")
     def enable_reference(id: str, reference: str, body: ReferenceEnabled):
         services.idle()
-        return services.workshop.similarity.library.change(id, reference, body.enabled)
+        return services.workshop.similarity.library.change(
+            id, reference, body.enabled, label=body.label, partition=body.partition
+        )
 
     @app.delete("/api/workspace/reference-groups/{id}/members/{reference}")
     def detach_reference(id: str, reference: str):
@@ -310,6 +365,86 @@ def create_app(
     def new_concept(body: ConceptName):
         services.idle()
         return services.workshop.new_concept(body.name)
+
+    @app.post("/api/compute")
+    def configure_compute(body: ComputeSettings):
+        services.idle()
+        return services.engine.configure(body.device, body.performance)
+
+    @app.get("/api/workspace/scenes/{id}/indexes")
+    def indexes(id: str):
+        return {"indexes": services.workshop.similarity.feature_store.overview(id)}
+
+    @app.post("/api/workspace/scene-index")
+    def build_scene_index(body: IndexRequest):
+        return services.jobs.submit(
+            "scene-index",
+            lambda job: services.workshop.similarity.feature_store.build(
+                job, body.scene, body.block, body.budget_gb
+            ),
+        )
+
+    @app.get("/api/workspace/reference-groups/{id}/learning")
+    def target_learning_state(id: str):
+        result = services.workshop.similarity.learning.status(id)
+        result.pop("model", None)
+        return result
+
+    @app.post("/api/workspace/reference-groups/{id}/train")
+    def train_target(id: str):
+        services.workshop.similarity.library.group(id)
+        return services.jobs.submit(
+            "adapt-target", lambda job: services.workshop.similarity.learning.train(job, id)
+        )
+
+    @app.post("/api/workspace/runs/{id}/teach/{index}")
+    def teach_result(id: str, index: int, body: TeachingVerdict):
+        services.workshop.run(id)
+        return services.jobs.submit(
+            "teach-feedback",
+            lambda job: services.workshop.similarity.learning.feedback(job, id, index, body.label),
+        )
+
+    @app.post("/api/workspace/references/{id}/segment")
+    def segment_reference(id: str, body: MaskRequest):
+        services.workshop.similarity.reference(id)
+        return services.jobs.submit(
+            "segment-reference",
+            lambda job: services.workshop.similarity.segmentation.propose(
+                job,
+                id,
+                [p.model_dump() for p in body.points],
+                body.box.model_dump() if body.box else None,
+                [p.model_dump() for p in body.polygon],
+            ),
+        )
+
+    @app.get("/api/workspace/masks/{id}")
+    def mask_image(id: str):
+        services.workshop.similarity.segmentation.draft(id)
+        return FileResponse(
+            services.workshop.similarity.segmentation.folder / f"{id}.png", media_type="image/png"
+        )
+
+    @app.get("/api/workspace/masks/{id}/overlay")
+    def mask_overlay(id: str):
+        services.workshop.similarity.segmentation.draft(id)
+        return FileResponse(
+            services.workshop.similarity.segmentation.folder / f"{id}-overlay.png", media_type="image/png"
+        )
+
+    @app.post("/api/workspace/reference-groups/{id}/apply-mask")
+    def apply_reference_mask(id: str, body: ApplyMask):
+        services.idle()
+        return services.workshop.similarity.segmentation.apply(id, body.reference, body.draft)
+
+    @app.post("/api/workspace/reference-groups/{id}/reset-mask")
+    def reset_reference_mask(id: str, body: ReferenceMember):
+        services.idle()
+        similar = services.workshop.similarity
+        source = similar.segmentation.source(body.reference)
+        similar.library.replace(id, body.reference, source["id"])
+        return similar.library.group(id)
 
     @app.get("/api/workspace/concepts/{id}/examples")
     def examples(id: str):
@@ -422,9 +557,20 @@ def create_app(
                         "pixel_similarity",
                         "structure_similarity",
                         "detail_similarity",
-                    "semantic_similarity",
-                    "matched_reference",
-                    "supporting_views",
+                        "semantic_similarity",
+                        "matched_reference",
+                        "supporting_views",
+                        "aerial_similarity",
+                        "geometry_status",
+                        "geometry_score",
+                        "geometry_inliers",
+                        "rotation_degrees",
+                        "relative_scale",
+                        "target_model_score",
+                        "geometry_quad",
+                        "search_mode",
+                        "searched_tiles",
+                        "full_tiles",
                     ]
                     if similar
                     else []
@@ -441,9 +587,20 @@ def create_app(
                             entry["appearance"],
                             entry["structure"],
                             entry["detail"],
-                        entry["semantic"],
-                        entry["matched_reference"],
-                        entry["support"],
+                            entry["semantic"],
+                            entry["matched_reference"],
+                            entry["support"],
+                            entry.get("aerial"),
+                            entry.get("geometry_status"),
+                            entry.get("geometry"),
+                            entry.get("inliers"),
+                            entry.get("rotation"),
+                            entry.get("scale"),
+                            entry.get("adapted"),
+                            json.dumps(entry.get("quad")),
+                            run["settings"].get("mode", "complete"),
+                            run["settings"].get("windows"),
+                            run["settings"].get("full_windows", run["settings"].get("windows")),
                         ]
                         if similar
                         else []

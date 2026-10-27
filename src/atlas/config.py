@@ -9,6 +9,8 @@ IMAGE_REVISION = "327ab6726d33c0e22f920c83f2ff9e4bd38ca37f"
 TEXT_REVISION = "58edf8cada9e398793dca955574a48cbb7f18be2"
 DETAIL_MODEL = "facebook/dinov2-small"
 DETAIL_REVISION = "ed25f3a31f01632728cabb09d1542f84ab7b0056"
+AERIAL_REVISION = "bf1d8a3ccf2ddbf7c875705e46373bfe542bce38"
+SEGMENT_REVISION = "de431c4043854a71d8101e17995dfe596bf101a5"
 # These models share a 512-dimensional CLIP embedding space. Changing either
 # model requires a new index version and re-indexing all images.
 INDEX_VERSION = f"clip-b32-multilingual-v1:{IMAGE_REVISION[:12]}:{TEXT_REVISION[:12]}:1"

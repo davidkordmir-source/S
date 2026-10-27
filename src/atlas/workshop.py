@@ -272,9 +272,7 @@ class Workshop:
                 (x, y, (b["x"] + b["width"]) * sx, (b["y"] + b["height"]) * sy), outline=color, width=2
             )
             label = str(item["index"] + 1) + (f" | {item['similarity_percent']:.1f}%" if similar else "")
-            draw.text(
-                (x + 3, y + 3), label, fill="white", stroke_fill="#193825", stroke_width=1
-            )
+            draw.text((x + 3, y + 3), label, fill="white", stroke_fill="#193825", stroke_width=1)
         metadata = PngImagePlugin.PngInfo()
         metadata.add_text("atlas_original_size", json.dumps([info["width"], info["height"]]))
         metadata.add_text("atlas_pixel_scale", json.dumps([sx, sy]))
@@ -659,11 +657,11 @@ class Workshop:
             yield from run["detections"]
 
     def crop_detection(self, run: str, index: int) -> Image.Image:
-        result = self.run(run)
+        result = self.run(run, limit=0)
         scene = self.scene(result["scene"])
         box = box_tuple(self.detection(run, index)["bbox"], scene["width"], scene["height"])
         with self.reader(scene["id"]) as reader:
-            return reader.read(box, 1024)
+            return reader.read(box, 1024, exact=True)
 
     def export_training(self, concept: str) -> bytes:
         current = self.concept(concept)

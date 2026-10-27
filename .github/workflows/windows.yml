@@ -60,6 +60,15 @@ jobs:
           if (-not $ApplicationProcess.WaitForExit(600000)) { $ApplicationProcess.Kill(); throw 'Similarity smoke timed out.' }
           if ($ApplicationProcess.ExitCode -ne 0) { throw 'Actual screenshot similarity smoke failed.' }
           Get-Content "$env:ATLAS_DATA_DIR/similarity-smoke.json"
+      - name: Test aerial learning, masks, geometry, index and accelerated graph
+        shell: pwsh
+        env:
+          ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-precision-smoke
+        run: |
+          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--precision-smoke-test' -PassThru
+          if (-not $ApplicationProcess.WaitForExit(900000)) { $ApplicationProcess.Kill(); throw 'Precision tools smoke timed out.' }
+          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Actual precision tools smoke failed.' }
+          Get-Content "$env:ATLAS_DATA_DIR/precision-smoke.json"
       - name: Test real BigTIFF tile addressing beyond one TiB in the executable
         shell: pwsh
         env:
@@ -115,7 +124,7 @@ jobs:
             Get-Content build.log -Tail 120 >> $env:GITHUB_STEP_SUMMARY
             '```' >> $env:GITHUB_STEP_SUMMARY
           }
-          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ecw-index-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
+          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-precision-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-precision-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ecw-index-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
             if (Test-Path $LogPath) {
               if ('${{ job.status }}' -eq 'failure') {
                 $TailText = (Get-Content $LogPath -Tail 35) -join '%0A'
@@ -138,6 +147,7 @@ jobs:
             ${{ runner.temp }}/atlas-formats-smoke/*.log
             ${{ runner.temp }}/atlas-ecw-index-smoke/*.log
             ${{ runner.temp }}/atlas-similar-smoke/*.log
+            ${{ runner.temp }}/atlas-precision-smoke/*.log
             ${{ runner.temp }}/atlas-large-smoke/*.log
             ${{ runner.temp }}/atlas-smoke/*.log
             ${{ runner.temp }}/atlas-ai-smoke/*.log
@@ -157,22 +167,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
-          RELEASE_TAG: atlas-v0.6.0-offline.${{ github.run_number }}
+          RELEASE_TAG: atlas-v0.7.0-offline.${{ github.run_number }}
         shell: bash
         run: |
           cat > release-notes.md <<'NOTES'
-          Fully offline Windows x64 preview. Extract the entire ZIP into a new folder and open AtlasScout.exe. Python and Node.js installation is not required. Three pinned AI models (DINOv2 detail features, CLIP image and multilingual text) are included; first launch also works without Internet.
+          Fully offline Windows x64 preview. Extract the entire ZIP into a new folder and open AtlasScout.exe. No Python or Node.js installation is needed. Five pinned models and a DINOv2 ONNX graph are included. Keep the whole extracted folder and retain linked imagery at its original path.
 
-          New visual teaching profiles accept one or many positive reference photos: one is enough to search, while additional relevant views extend the visual examples. Upload several files, drag/drop, paste, or select scene rectangles into the current target. Rename targets, enable/disable/remove individual views, and keep unrelated targets separate. Duplicate image uploads do not add duplicate votes. Existing single-image references migrate to separate targets. The selected target and examples persist offline.
+          New precision tools: correct/wrong result feedback, positive/negative reference examples, optional local Logistic Regression adaptation over fixed DINOv2 and aerial RemoteCLIP features, separate training/test examples and evaluation without overlapping known scene crops or sibling augmentations. One positive photo still starts a search; a negative example is needed only for the optional dedicated classifier. The foundation networks are not fine-tuned. Precision/recall/F1 are reported only with both test classes; these user-example metrics are not a satellite benchmark or calibrated probabilities. Grayscale matching continues to exclude colour-palette evidence.
 
-          Reference teaching/search removes hue and saturation before every template, DINOv2 and CLIP comparison. Grayscale contrast, gradients, local features and 3x3 spatial layout provide shape/texture evidence; matching colour palettes alone cannot earn a colour-similarity score. Flat colour-only references cannot start a search. Each candidate is compared against every active view and keeps the best consistent per-view score; there is no percentage bonus merely for adding images. The matching reference and number of supporting views are shown/exported. Cached reference features are reused after restarts; each new view is prepared independently. This is exemplar-based learning with fixed offline foundation models, not neural-network fine tuning. Diverse relevant views can improve coverage; more images do not guarantee greater accuracy.
+          Target isolation accepts foreground/background clicks, a box with offline SAM2.1 Hiera Tiny, or a manual polygon. Review the proposed mask before applying; original references remain available. SIFT/RANSAC provides continuous rotation, scale and projective verification with inlier counts and polygon overlays. Verification is optional because low-detail targets may lack enough keypoints; strict mode excludes unverified candidates.
 
-          DINOv2 dense feature proposals remain independent of pixel-template gates; exact crop features are reranked locally. Scale variation and 45-degree rotations remain available. CPU deep search takes longer, especially with many examples or huge scenes. Searches checkpoint each tile and resume; changing examples invalidates the relevant scan cache. Threshold updates reuse completed candidates. Default score threshold is55%.
+          Persistent disk-bounded dense-feature caching and a resumable scene index support repeated searches. Complete search checks every selected tile. Fast search retrieves a bounded set of indexed regions and explicitly reports approximate coverage, which can miss targets. CSV exports include evidence, geometry, target-model scores and search coverage. Search checkpoints and existing training data are preserved.
 
-          Results are ranked and graded: high similarity (85%+), similar (70–85%), and review (below 70%). Map boxes and cards show percentage scores and matching colours. Level filters update both map and paged results; selected crops can be compared beside the reference with component scores. CSV includes all accepted results, percentages, grades and component scores. Annotated PNG uses the same colours and percentage labels. Scores are heuristic similarity indices, not calibrated detection probabilities. Independent satellite detection accuracy has not been measured.
+          A viewport-sized WebGL renderer draws only visible image tiles, with a bounded texture cache and fallback after context loss. Hardware settings offer auto/CPU/GPU and maximum/balanced performance. The portable Windows build includes DirectML for DINOv2 on compatible AMD/Intel/NVIDIA drivers; remaining models use CPU. Source installations with CUDA-enabled PyTorch can use CUDA. Auto mode falls back to CPU when a GPU fails. The active provider is reported only after execution, and DirectML node use is checked on the first inference. No specific GPU speedup is claimed without a hardware benchmark.
 
-          The former ECW directory RAM gate is replaced by lazy raw/v3 directory access and bounded streaming decompression of v1/v2 compressed directories to an atomic reusable disk cache. The included MIT ecw2tiff fork retains upstream source/license/provenance; no proprietary ECW SDK is included. The first open of a compressed directory can require additional disk space and time. It does not copy the imagery. Synthetic large-directory ECWs exceed the old admission gate and test decoding and cache reuse; real ECW v2/v3 imagery is tested separately. A physical 1 TiB imagery dataset has not been benchmarked.
-
-          Native executable checks passed for image formats, large ECW indexes, a sparse BigTIFF with real tile data beyond 1 TiB, screenshot matching using actual offline models (including independently rendered changed-colour/texture/geometry targets, ranking, grades, feature-only proposals, one-vs-two-view coverage and same-palette distractor rejection), native desktop/channel startup and the existing real-AI training/search/feedback workflow. These controlled functional fixtures are not a satellite accuracy benchmark. Searches checkpoint each tile and resume; all accepted results are stored. Images and processing stay on this computer. Original pixel coordinates are retained; geographic coordinate export is not supported. Annotated PNG is a bounded overview. Retain linked originals at their selected path. Existing reference and training data are preserved. Previous version candidate caches are invalidated automatically. DINOv2 model attribution and its Apache 2.0 license are included.
+          Native Windows executable checks exercise actual bundled aerial/segmentation models, adaptation, held-out evaluation, feedback, index persistence, geometry, ONNX CPU parity, existing similarity search, raster formats, ECW v2/v3, a sparse BigTIFF with real tiles beyond one TiB, desktop startup and legacy learning with outbound Python sockets blocked. Controlled functional fixtures do not measure real-world satellite detection accuracy, a physical one-terabyte dataset, or GPU throughput. Image coordinates remain in original pixels; geographic export is not supported. Open-source model/codec license notices are included; no proprietary ECW SDK is bundled.
           NOTES
-          gh release create "$RELEASE_TAG" package/AtlasScout-Offline-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.6.0 Offline — Optional multiview teaching and shape-based search' --notes-file release-notes.md
+          gh release create "$RELEASE_TAG" package/AtlasScout-Offline-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.7.0 Offline — Precision teaching and local hardware rendering' --notes-file release-notes.md

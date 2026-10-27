@@ -42,6 +42,11 @@ def main() -> None:
         action="store_true",
         help="Validate screenshot search with real image embeddings",
     )
+    parser.add_argument(
+        "--precision-smoke-test",
+        action="store_true",
+        help="Validate aerial learning, masks, pose, indexing and accelerated graph offline",
+    )
     args = parser.parse_args()
     root = data_directory()
     root.mkdir(parents=True, exist_ok=True)
@@ -61,6 +66,11 @@ def main() -> None:
         from .similarity_validation import validate_similarity
 
         validate_similarity(root)
+        return
+    if args.precision_smoke_test:
+        from .precision_validation import validate_precision
+
+        validate_precision(root)
         return
     if args.formats_smoke_test:
         from .validation import validate_packaged_formats
@@ -166,6 +176,8 @@ def main() -> None:
     page.setBackgroundColor(QColor("#101814"))
     page.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
     page.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
+    page.settings().setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
+    page.settings().setAttribute(QWebEngineSettings.WebAttribute.Accelerated2dCanvasEnabled, True)
     view.setPage(page)
     from .desktop_bridge import FileBridge
 
@@ -185,13 +197,16 @@ def main() -> None:
 
         def inspect_document():
             def received(value):
-                passed = value is True
+                import json
+
+                passed = isinstance(value, dict) and value.get("document") is True
+                (root / "desktop-smoke.json").write_text(json.dumps(value, indent=2), encoding="utf-8")
                 smoke_passed.append(passed)
                 print("Desktop document smoke: " + ("PASS" if passed else "FAIL"), flush=True)
                 application.quit()
 
             page.runJavaScript(
-                "Boolean(window.__atlasNativeReady && document.querySelector('h1') && document.querySelector('.scene-viewport') && !document.querySelector('.notice.error'))",
+                "(() => {const c=document.createElement('canvas'),gl=c.getContext('webgl');const i=gl?.getExtension('WEBGL_debug_renderer_info');const renderer=gl?String(gl.getParameter(i?i.UNMASKED_RENDERER_WEBGL:gl.RENDERER)):'unavailable';gl?.getExtension('WEBGL_lose_context')?.loseContext();return {document:Boolean(window.__atlasNativeReady && document.querySelector('h1') && document.querySelector('.scene-viewport') && !document.querySelector('.notice.error')),webgl:Boolean(gl),renderer};})()",
                 received,
             )
 

@@ -15,9 +15,12 @@ from PIL import Image
 
 from .config import DETAIL_REVISION, INDEX_VERSION
 from .errors import UserError
+from .feature_store import FeatureStore
 from .image_io import read_picture
 from .reference_library import ReferenceLibrary
 from .reference_matcher import ReferenceMatcher
+from .segmentation import Segmentation
+from .target_learning import TargetLearning
 from .visual_features import shape_picture
 from .workshop import box_tuple, intersection_over_union, rect_dict
 
@@ -55,6 +58,24 @@ class Similarity:
                     if column not in existing:
                         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         self.library = ReferenceLibrary(self)
+        self.segmentation = Segmentation(self)
+        self.learning = TargetLearning(self)
+        self.feature_store = FeatureStore(workshop)
+        with workshop.connect() as db:
+            for table in ("similar_candidates", "similar_detections"):
+                columns = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+                for name, kind in [
+                    ("aerial", "REAL"),
+                    ("geometry", "REAL"),
+                    ("geometry_status", "TEXT"),
+                    ("inliers", "INTEGER"),
+                    ("rotation", "REAL"),
+                    ("scale", "REAL"),
+                    ("quad", "TEXT"),
+                    ("adapted", "REAL"),
+                ]:
+                    if name not in columns:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     def references(self):
         with self.workshop.connect() as db:
@@ -67,6 +88,10 @@ class Similarity:
     def _reference(row):
         row["bbox"] = json.loads(row["bbox"]) if row["bbox"] else None
         row["image_url"] = f"/api/workspace/references/{row['id']}/image"
+        row["source_image_url"] = (
+            f"/api/workspace/references/{row.get('source_reference') or row['id']}/image"
+        )
+        row["has_mask"] = bool(row.get("source_reference"))
         return row
 
     def reference(self, id):
@@ -88,7 +113,7 @@ class Similarity:
         try:
             with self.workshop.connect() as db:
                 db.execute(
-                    "INSERT INTO image_references VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO image_references(id,name,scene,bbox,width,height,created) VALUES(?,?,?,?,?,?,?)",
                     (
                         identifier,
                         Path(name.replace("\\", "/")).name[:160],
@@ -126,12 +151,24 @@ class Similarity:
         rotate=True,
         intelligent=True,
         group=None,
+        aerial=True,
+        geometry=True,
+        strict_geometry=False,
+        fine_pose=True,
+        adapt=True,
+        mode="complete",
+        index_block=512,
+        fast_regions=1000,
         **ignored,
     ):
         info = self.workshop.scene(scene)
         self.workshop.scene_path(scene)
         references = (
-            [r for r in self.library.group(group)["references"] if r["enabled"]]
+            [
+                r
+                for r in self.library.group(group)["references"]
+                if r["enabled"] and r["label"] == 1 and r["partition"] == "train"
+            ]
             if group
             else [self.reference(reference)]
             if reference
@@ -140,6 +177,27 @@ class Similarity:
         if not references:
             raise UserError("حداقل یک نمونهٔ فعال برای هدف اضافه کن؛ چند نمونه اجباری نیست.")
         reference = references[0]["id"]
+        if mode not in ("complete", "fast"):
+            raise UserError("حالت جست‌وجو معتبر نیست.")
+        if strict_geometry and not geometry:
+            raise UserError("برای حالت سخت‌گیرانه، بررسی هندسی را فعال کن.")
+        if not intelligent and (mode == "fast" or adapt and group and self.learning.status(group)["ready"]):
+            raise UserError("حالت سریع و آموزش اختصاصی به جست‌وجوی هوشمند نیاز دارند.")
+        negative = (
+            [
+                dict(id=r["id"], name=r["name"])
+                for r in self.library.group(group)["references"]
+                if r["enabled"] and r["label"] == 0 and r["partition"] == "train"
+            ]
+            if group
+            else []
+        )
+        learning = self.learning.status(group) if group else None
+        index = self.feature_store.index_plan(scene, index_block) if mode == "fast" else None
+        if index and index["completed"] != index["windows"]:
+            raise UserError(
+                "نمایهٔ تصویر هنوز کامل نیست؛ ابتدا نمایه‌سازی را تمام کن یا بررسی کامل را انتخاب کن."
+            )
         if not (8 <= width <= 8192 and 8 <= height <= 8192):
             raise UserError("اندازهٔ هدف باید بین ۸ و ۸۱۹۲ پیکسل باشد.")
         box = (
@@ -172,6 +230,19 @@ class Similarity:
             references=views,
             reference_count=len(views),
             colour_evidence=False,
+            scene_fingerprint=self.feature_store.fingerprint(scene),
+            negative_references=negative,
+            training_revision=learning["revision"] if learning else None,
+            adapter=learning["model"] if adapt and learning and learning["ready"] else None,
+            aerial=aerial,
+            geometry=geometry,
+            strict_geometry=strict_geometry,
+            fine_pose=fine_pose,
+            adapt=adapt,
+            mode=mode,
+            index_block=index_block,
+            index_id=index["id"] if index else None,
+            fast_regions=fast_regions,
             width=width,
             height=height,
             scope=rect_dict(box),
@@ -183,14 +254,14 @@ class Similarity:
             columns=columns,
             windows=columns * rows,
             feature=INDEX_VERSION,
-            algorithm="reference-v5-multiview-shape:" + DETAIL_REVISION[:12],
+            algorithm="reference-v6-precision:" + DETAIL_REVISION[:12],
         )
         scan = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         with self.workshop.connect() as db:
-            row = db.execute("SELECT next_tile FROM similar_scans WHERE id=?", (scan,)).fetchone()
+            row = db.execute("SELECT next_tile,total_tiles FROM similar_scans WHERE id=?", (scan,)).fetchone()
         return dict(
             allowed=True,
-            windows=columns * rows,
+            windows=row["total_tiles"] if row else columns * rows,
             completed=row["next_tile"] if row else 0,
             scope=settings["scope"],
             scan=scan,
@@ -200,14 +271,55 @@ class Similarity:
     def search(self, job, threshold=0.55, **options):
         if not math.isfinite(threshold) or not 0.4 <= threshold <= 0.99:
             raise UserError("آستانهٔ شباهت باید بین ۰٫۴ و ۰٫۹۹ باشد.")
+        group = options.get("group")
+        if group and options.get("adapt", True) and options.get("intelligent", True):
+            state = self.learning.status(group)
+            if not state["ready"] and state["positive"] and state["negative"]:
+                self.learning.train(job, group)
         plan = self.plan(**options)
         settings, scan = plan["settings"], plan["scan"]
         reference = self.reference(settings["reference"])
         matcher = ReferenceMatcher(self, settings, job)
+        selected = None
+        if settings["mode"] == "fast":
+            with self.workshop.connect() as db:
+                saved = db.execute("SELECT settings FROM similar_scans WHERE id=?", (scan,)).fetchone()
+            if saved:
+                selected = json.loads(saved["settings"]).get("selected_tiles")
+            if selected is None:
+                areas = self.feature_store.shortlist(
+                    settings["scene"],
+                    [vector for bank in matcher.bank for vector in bank["pooled"]],
+                    settings["index_block"],
+                    settings["fast_regions"],
+                    scope=settings["scope"],
+                )
+                scope = settings["scope"]
+                span = settings["span"]
+                selected_set = set()
+                for area in areas:
+                    left = max(scope["x"], area["x"])
+                    top = max(scope["y"], area["y"])
+                    right = min(scope["x"] + scope["width"], area["x"] + area["width"])
+                    bottom = min(scope["y"] + scope["height"], area["y"] + area["height"])
+                    if left >= right or top >= bottom:
+                        continue
+                    for ty in range(
+                        int((top - scope["y"]) // span), int((bottom - 1 - scope["y"]) // span) + 1
+                    ):
+                        for tx in range(
+                            int((left - scope["x"]) // span), int((right - 1 - scope["x"]) // span) + 1
+                        ):
+                            selected_set.add(ty * settings["columns"] + tx)
+                selected = sorted(selected_set)
+            settings["selected_tiles"] = selected
+            settings["full_windows"] = settings["windows"]
+            settings["windows"] = len(selected)
+            plan["windows"] = len(selected)
         factor, span, columns = settings["factor"], settings["span"], settings["columns"]
         margin = math.ceil(
             max(max(v["width"], v["height"]) for v in settings["references"])
-            * max(matcher.scales)
+            * max(max(matcher.scales), (3 if settings["broad"] else 1.6) if settings["fine_pose"] else 0)
             * (2**0.5 if settings["rotate"] else 1)
         )
         info = self.workshop.scene(settings["scene"])
@@ -241,7 +353,8 @@ class Similarity:
                     raise UserError(
                         "فضای دیسک برای ذخیرهٔ جست‌وجو کافی نیست؛ پیشرفت تا بخش قبلی ذخیره شده است."
                     )
-                x0, y0 = box[0] + tile % columns * span, box[1] + tile // columns * span
+                position = selected[tile] if selected is not None else tile
+                x0, y0 = box[0] + position % columns * span, box[1] + position // columns * span
                 x1, y1 = min(box[2], x0 + span + margin), min(box[3], y0 + span + margin)
                 picture = reader.read(
                     (x0, y0, x1, y1), max(1, math.ceil(max(x1 - x0, y1 - y0) / factor)), exact=True
@@ -260,7 +373,7 @@ class Similarity:
                 with self.workshop.connect() as db:
                     db.execute("DELETE FROM similar_candidates WHERE scan=? AND tile=?", (scan, tile))
                     db.executemany(
-                        "INSERT INTO similar_candidates(scan,tile,x,y,w,h,score,appearance,semantic,angle,detail,structure,matched_reference,support) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO similar_candidates(scan,tile,x,y,w,h,score,appearance,semantic,angle,detail,structure,matched_reference,support,aerial,geometry,geometry_status,inliers,rotation,scale,quad,adapted) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         records,
                     )
                     db.execute("UPDATE similar_scans SET next_tile=? WHERE id=?", (tile + 1, scan))
@@ -291,7 +404,7 @@ class Similarity:
                     ):
                         continue
                     result = db.execute(
-                        "INSERT INTO similar_detections(run,idx,x,y,w,h,score,appearance,semantic,angle,detail,structure,matched_reference,support) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO similar_detections(run,idx,x,y,w,h,score,appearance,semantic,angle,detail,structure,matched_reference,support,aerial,geometry,geometry_status,inliers,rotation,scale,quad,adapted) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             run,
                             total,
@@ -307,6 +420,19 @@ class Similarity:
                             row["structure"],
                             row["matched_reference"],
                             row["support"],
+                            *[
+                                row[k]
+                                for k in (
+                                    "aerial",
+                                    "geometry",
+                                    "geometry_status",
+                                    "inliers",
+                                    "rotation",
+                                    "scale",
+                                    "quad",
+                                    "adapted",
+                                )
+                            ],
                         ),
                     )
                     db.execute(
@@ -325,7 +451,12 @@ class Similarity:
             result = self.workshop.run(run)
             result.update(
                 run=run,
-                message=f"جست‌وجو کامل شد؛ {total:,} مورد مشابه ذخیره شد. تمام بخش‌های محدوده بررسی شدند.",
+                message=f"جست‌وجو کامل شد؛ {total:,} مورد مشابه ذخیره شد. "
+                + (
+                    "بخش‌های برگزیدهٔ نمایه بررسی شدند؛ حالت سریع ممکن است مواردی را جا بیندازد."
+                    if settings["mode"] == "fast"
+                    else "تمام بخش‌های محدوده بررسی شدند."
+                ),
             )
             return result
         except Exception:
@@ -348,6 +479,14 @@ class Similarity:
             angle=row["angle"],
             matched_reference=row["matched_reference"],
             support=row["support"],
+            aerial=row["aerial"],
+            geometry=row["geometry"],
+            geometry_status=row["geometry_status"],
+            inliers=row["inliers"],
+            rotation=row["rotation"],
+            scale=row["scale"],
+            quad=json.loads(row["quad"]) if row["quad"] else None,
+            adapted=row["adapted"],
             detail=round(row["detail"], 5) if row["detail"] is not None else None,
             structure=round(row["structure"], 5) if row["structure"] is not None else None,
             level=similarity_level(row["score"]),
@@ -376,7 +515,7 @@ class Similarity:
                     ),
                 ).fetchall()
                 return {
-                    "detections": [self.detection(r) for r in rows[:limit]],
+                    "detections": self.annotate_feedback(run, [self.detection(r) for r in rows[:limit]]),
                     "truncated": len(rows) > limit,
                 }
             rows = db.execute(
@@ -391,11 +530,19 @@ class Similarity:
                 ):
                     counts[row["level"]] = row["total"]
         return {
-            "detections": [self.detection(r) for r in rows],
+            "detections": self.annotate_feedback(run, [self.detection(r) for r in rows]),
             "level": level,
             "level_counts": counts,
             "filtered_results": sum(counts.values()) if level == "all" else counts[level],
         }
+
+    def annotate_feedback(self, run, detections):
+        with self.workshop.connect() as db:
+            labels = {
+                r["idx"]: r["label"]
+                for r in db.execute("SELECT idx,label FROM reference_feedback WHERE run=?", (run,))
+            }
+        return [{**d, "feedback": labels.get(d["index"])} for d in detections]
 
     def one(self, run, index):
         with self.workshop.connect() as db:

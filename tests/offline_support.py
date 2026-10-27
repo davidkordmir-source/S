@@ -24,6 +24,19 @@ def scene_bytes():
 class OfflineTestEngine:
     def __init__(self):
         self.calls = 0
+        self.hardware = dict(
+            preference="auto",
+            performance="maximum",
+            cpu_threads=1,
+            device="CPU",
+            gpu_available=False,
+            adapters=[],
+            fallback_reason="",
+        )
+
+    def configure(self, device, performance=None):
+        self.hardware.update(preference=device, performance=performance or "maximum")
+        return self.hardware
 
     def status(self):
         return dict(
@@ -33,6 +46,10 @@ class OfflineTestEngine:
             text_loaded=True,
             offline=True,
             detail_available=True,
+            aerial_available=True,
+            segmentation_available=True,
+            compute=self.hardware,
+            device="CPU",
         )
 
     def images(self, pictures):
@@ -51,6 +68,22 @@ class OfflineTestEngine:
         # Wiring double only. Real DINO retrieval is checked with pinned weights
         # by the packaged --similarity-smoke-test, never by this stand-in.
         return [
-            dict(cls=np.zeros(384, np.float32), grid=np.zeros((p.height // 14, p.width // 14, 384), np.float32))
+            dict(
+                cls=np.zeros(384, np.float32), grid=np.zeros((p.height // 14, p.width // 14, 384), np.float32)
+            )
             for p in pictures
         ]
+
+    def aerial(self, pictures):
+        vectors = np.zeros((len(pictures), 512), np.float32)
+        vectors[:, 0] = 1
+        return vectors
+
+    def segment(self, picture, points=None, box=None):
+        mask = Image.new("L", picture.size)
+        draw = ImageDraw.Draw(mask)
+        box = box or dict(
+            x=picture.width // 4, y=picture.height // 4, width=picture.width // 2, height=picture.height // 2
+        )
+        draw.rectangle((box["x"], box["y"], box["x"] + box["width"], box["y"] + box["height"]), fill=255)
+        return mask, 0.8
