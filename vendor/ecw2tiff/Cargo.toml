@@ -1,0 +1,39 @@
+[package]
+name = "ecw2tiff"
+version = "0.2.0+atlas.1"
+edition = "2021"
+description = "Clean-room ECW (v1/v2/v3) decoder and BigTIFF converter"
+license = "MIT"
+
+# cdylib for the Python extension module; rlib so the CLI binary and tests
+# link the same library.
+[lib]
+name = "ecw2tiff"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+flate2 = "1"
+jpeg-encoder = { version = "0.6", features = ["std"] }
+rayon = "1"
+turbojpeg = { version = "1", optional = true }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"], optional = true }
+webp = { version = "0.3", optional = true }
+
+[features]
+default = ["turbo"]
+# JPEG tile encoding via libjpeg-turbo (SIMD; needs the native library).
+# Build with --no-default-features for a pure-Rust binary.
+turbo = ["dep:turbojpeg"]
+# Deflate via zlib-ng instead of the pure-Rust miniz_oxide backend. On Apple
+# Silicon its NEON match-finder and checksums cut deflate CPU by about a
+# quarter, at the cost of roughly 4-5% larger output at the same level, so it
+# is opt-in rather than default. Needs a C toolchain and cmake to build.
+fast-deflate = ["flate2/zlib-ng"]
+# Python extension module (PyO3 + maturin). Enabled by the maturin build.
+python = ["dep:pyo3"]
+# WebP tile output for the Python binding (links libwebp).
+webp = ["dep:webp"]
+
+[profile.release]
+lto = true
+codegen-units = 1

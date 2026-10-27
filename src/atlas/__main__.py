@@ -32,6 +32,16 @@ def main() -> None:
     parser.add_argument(
         "--large-files-smoke-test", action="store_true", help="Check sparse BigTIFF addressing beyond 1 TiB"
     )
+    parser.add_argument(
+        "--ecw-index-smoke-test",
+        action="store_true",
+        help="Validate ECW directories exceeding the former index cap",
+    )
+    parser.add_argument(
+        "--similarity-smoke-test",
+        action="store_true",
+        help="Validate screenshot search with real image embeddings",
+    )
     args = parser.parse_args()
     root = data_directory()
     root.mkdir(parents=True, exist_ok=True)
@@ -42,6 +52,16 @@ def main() -> None:
         ],
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if args.ecw_index_smoke_test:
+        from .ecw_validation import validate_ecw_directories
+
+        validate_ecw_directories(root)
+        return
+    if args.similarity_smoke_test:
+        from .similarity_validation import validate_similarity
+
+        validate_similarity(root)
+        return
     if args.formats_smoke_test:
         from .validation import validate_packaged_formats
 

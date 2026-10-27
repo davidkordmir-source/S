@@ -17,7 +17,7 @@ def available() -> bool:
 
 
 def is_ecw(data: bytes) -> bool:
-    return data[:3] == b"\x65\x02\x01" or data[4:8] == b"ecw "
+    return data[:3] in (b"\x65\x01\x01", b"\x65\x02\x01") or data[4:8] == b"ecw "
 
 
 def read_ecw(data: bytes, maximum_pixels: int) -> Image.Image:
@@ -57,15 +57,10 @@ def read_ecw(data: bytes, maximum_pixels: int) -> Image.Image:
         ) from exc
 
 
-def check_scene_index_budget(path: Path):
-    """Inspect bounded header records before the native decoder allocates its index.
-
-    ecw2tiff currently materializes block offsets; large file size alone does
-    not imply a large index, but an enormous index needs a different reader.
-    """
+def inspect_ecw_layout(path: Path):
+    """Validate small metadata records; directory size no longer limits scenes."""
     import struct
 
-    budget = 128 * 1024 * 1024
     with path.open("rb") as file:
         size = path.stat().st_size
 
@@ -83,7 +78,6 @@ def check_scene_index_budget(path: Path):
             levels, bands = header[4], int.from_bytes(header[14:16], "big")
             bx, by = struct.unpack(">HH", header[18:22])
             position = 89 if header[1] > 1 else 22
-            multiplier = 64  # conservative peak of packed/raw/converted tables
         else:
             image_header, codestream = None, None
 
@@ -120,7 +114,7 @@ def check_scene_index_budget(path: Path):
             levels = image_header[13]
             bands = int.from_bytes(image_header[11:13], "big")
             bx, by = struct.unpack(">HH", image_header[15:19])
-            position, multiplier = codestream, 32
+            position = codestream
         if not (1 <= levels <= 32 and 1 <= bands <= 16 and bx and by):
             raise UserError("این ساختار ECW در خوانندهٔ فعلی پشتیبانی نمی‌شود.")
         total = 0
@@ -129,11 +123,8 @@ def check_scene_index_budget(path: Path):
             width, height = struct.unpack(">II", record[1:9])
             total += ((width + bx - 1) // bx) * ((height + by - 1) // by)
             position += len(record)
-            if (total + 1) * multiplier > budget:
-                raise UserError(
-                    "جدول بلوک‌های این ECW بیش از بودجهٔ حافظهٔ خوانندهٔ فعلی است؛ از GeoTIFF کاشی‌بندی‌شده یا فایل‌های بخش‌بندی‌شده استفاده کن."
-                )
         if header[0] == ord("e"):
             packed = int.from_bytes(at(position, 4), "big")
-            if packed > budget // 4:
-                raise UserError("جدول فشردهٔ این ECW برای خوانندهٔ فعلی بیش از حد بزرگ است.")
+            if packed < 1 or position + 4 + packed > size:
+                raise UserError("جدول بلوک ECW ناقص است.")
+        return {"blocks": total, "directory_bytes": (total + 1) * 8 if header[0] == ord("e") else total * 12}

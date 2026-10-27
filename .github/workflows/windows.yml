@@ -25,6 +25,9 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: ui/package-lock.json
+      - name: Prepare the pinned Rust toolchain for the vendored MIT decoder
+        shell: pwsh
+        run: rustup toolchain install 1.99.1 --profile minimal
       - name: Install, test, and package
         shell: pwsh
         run: |
@@ -39,6 +42,24 @@ jobs:
           if (-not $ApplicationProcess.WaitForExit(180000)) { $ApplicationProcess.Kill(); throw 'Image format smoke timed out.' }
           if ($ApplicationProcess.ExitCode -ne 0) { throw 'Packaged image decoder smoke failed.' }
           Get-Content "$env:ATLAS_DATA_DIR/formats-smoke.json"
+      - name: Test large ECW directories in the executable
+        shell: pwsh
+        env:
+          ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-ecw-index-smoke
+        run: |
+          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--ecw-index-smoke-test' -PassThru
+          if (-not $ApplicationProcess.WaitForExit(180000)) { $ApplicationProcess.Kill(); throw 'ECW index smoke timed out.' }
+          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Disk-backed ECW smoke failed.' }
+          Get-Content "$env:ATLAS_DATA_DIR/ecw-index-smoke.json"
+      - name: Test screenshot similarity with actual bundled AI
+        shell: pwsh
+        env:
+          ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-similar-smoke
+        run: |
+          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--similarity-smoke-test' -PassThru
+          if (-not $ApplicationProcess.WaitForExit(300000)) { $ApplicationProcess.Kill(); throw 'Similarity smoke timed out.' }
+          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Actual screenshot similarity smoke failed.' }
+          Get-Content "$env:ATLAS_DATA_DIR/similarity-smoke.json"
       - name: Test real BigTIFF tile addressing beyond one TiB in the executable
         shell: pwsh
         env:
@@ -94,7 +115,7 @@ jobs:
             Get-Content build.log -Tail 120 >> $env:GITHUB_STEP_SUMMARY
             '```' >> $env:GITHUB_STEP_SUMMARY
           }
-          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
+          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ecw-index-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
             if (Test-Path $LogPath) {
               if ('${{ job.status }}' -eq 'failure') {
                 $TailText = (Get-Content $LogPath -Tail 35) -join '%0A'
@@ -115,6 +136,8 @@ jobs:
             pytest.log
             pytest-results.xml
             ${{ runner.temp }}/atlas-formats-smoke/*.log
+            ${{ runner.temp }}/atlas-ecw-index-smoke/*.log
+            ${{ runner.temp }}/atlas-similar-smoke/*.log
             ${{ runner.temp }}/atlas-large-smoke/*.log
             ${{ runner.temp }}/atlas-smoke/*.log
             ${{ runner.temp }}/atlas-ai-smoke/*.log
@@ -134,14 +157,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
-          RELEASE_TAG: atlas-v0.3.0-offline.${{ github.run_number }}
+          RELEASE_TAG: atlas-v0.4.0-offline.${{ github.run_number }}
         shell: bash
         run: |
           cat > release-notes.md <<'NOTES'
           Fully offline Windows x64 preview. Extract the entire ZIP and open AtlasScout.exe. Python and Node.js installation is not required. Both pinned AI models are included; first launch also works without Internet.
 
-          Import your satellite image, draw positive and negative examples, train a local classifier and find similar regions in that image. Save/import training packs, refine with feedback, and export annotated PNG or pixel-coordinate CSV. Persian/English text search is also local.
+          New default workflow: select a reference rectangle or upload/paste a screenshot, set the target size, and find similar visual patterns across the entire scene or an optional region. Pattern matching supports scale variation and rotations in 45-degree steps, with optional local AI reranking. Searches checkpoint each tile and resume after cancellation/restart. All accepted detections are stored; cards are paged and viewport overlays are fetched separately. CSV streams every result. Detection accuracy is not guaranteed and screenshot/map scale matters.
 
-          The executable passed real image-decoder and ECW v2/v3 checks, a native desktop check and actual bundled-model training, held-out image search, feedback/retraining, training-pack roundtrip and Persian/English inference with external socket connections blocked. This functional check uses controlled fixtures; satellite detection accuracy has not been benchmarked. Scores are not calibrated probabilities. Scenes open directly from disk with no fixed file-byte limit. Previews, visible tiles, training crops and search windows are read on demand. The executable also passed a sparse BigTIFF test with a genuine encoded tile beyond 1 TiB, a 720-million-pixel raster, bounded memory growth, original pixel coordinates, and training/export persistence. This is not a physical 1 TiB imagery or universal-codec performance test. A real streamed 160 MiB upload passed regression tests. Huge files need a window-capable codec and appropriate internal blocks; ECW index memory is bounded and oversized indexes are reported explicitly. Select a search region for large scenes (5000 windows per search). Annotated PNG exports are overviews up to 4096 pixels; CSV keeps original pixel coordinates. File linking is the default on Windows; keep linked originals at the selected path. ECW v2/v3, GeoTIFF, JPEG 2000, HEIC/HEIF, AVIF, GIF and other readers are bundled. Previous format coverage: ECW v2/v3, GeoTIFF, JPEG 2000, HEIC/HEIF, AVIF, GIF and many other image formats have bundled offline readers. Multi-page/animated inputs use the first frame; high-bit/multiband rasters are converted to RGB8 for search. Geographic coordinate export is not supported.
+          The former ECW directory RAM gate is replaced by lazy raw/v3 directory access and bounded streaming decompression of v1/v2 compressed directories to an atomic reusable disk cache. The included MIT ecw2tiff fork retains upstream source/license/provenance; no proprietary ECW SDK is included. The first open of a compressed directory can require additional disk space and time. It does not copy the imagery. Synthetic large-directory ECWs exceed the old admission gate and test decoding and cache reuse; real ECW v2/v3 imagery is tested separately. A physical 1 TiB imagery dataset has not been benchmarked.
+
+          Native executable checks passed for image formats, large ECW indexes, a sparse BigTIFF with real tile data beyond 1 TiB, screenshot matching using actual offline embeddings, native desktop/channel startup and the existing real-AI training/search/feedback workflow. Images and processing stay on this computer. Original pixel coordinates are retained; geographic coordinate export is not supported. Annotated PNG is a bounded overview. Retain linked originals at their selected path. Full model files are included; source builds require Rust, running this ZIP does not.
           NOTES
-          gh release create "$RELEASE_TAG" package/AtlasScout-Offline-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.3.0 Offline — Windows, large image files' --notes-file release-notes.md
+          gh release create "$RELEASE_TAG" package/AtlasScout-Offline-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.4.0 Offline — Screenshot similarity and disk-backed ECW' --notes-file release-notes.md

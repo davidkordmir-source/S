@@ -25,6 +25,8 @@ if __name__ == "__main__":
                     "--ai-smoke-test",
                     "--formats-smoke-test",
                     "--large-files-smoke-test",
+                    "--ecw-index-smoke-test",
+                    "--similarity-smoke-test",
                 )
             )
             and os.name == "nt"

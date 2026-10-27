@@ -71,7 +71,7 @@ def validate_packaged_formats(root: Path) -> dict:
                 assert image.mode == "RGB" and min(image.size) > 0
         assert not attempts
         report = dict(
-            ecw_decoder="ecw2tiff 0.1.1 (MIT)",
+            ecw_decoder="ecw2tiff 0.2.0+atlas.1 (MIT, disk-backed index)",
             proprietary_ecw_sdk=False,
             status="passed",
             offline=True,

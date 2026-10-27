@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 if (-not $SkipSetup) { & "$PSScriptRoot/setup-windows.ps1" }
+& cargo test --manifest-path vendor/ecw2tiff/Cargo.toml --no-default-features --locked
+if ($LASTEXITCODE -ne 0) { throw 'Vendored ECW codec regression tests failed.' }
 if (-not (Test-Path 'ui/dist/index.html')) { throw 'Build the UI before packaging.' }
 & '.venv/Scripts/python.exe' scripts/bundle-raster.py
 if ($LASTEXITCODE -ne 0) { throw 'Preparing the verified native ECW/raster decoder failed.' }

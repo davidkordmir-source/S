@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import warnings
@@ -10,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .ecw_reader import check_scene_index_budget, is_ecw
+from .ecw_reader import inspect_ecw_layout, is_ecw
 from .errors import UserError
 from .image_io import PIL_FORMATS, read_picture
 
@@ -46,7 +47,7 @@ class LimitedFile:
 
 
 class SceneReader:
-    def __init__(self, path: Path, metadata: dict | None = None):
+    def __init__(self, path: Path, metadata: dict | None = None, *, cache_directory: Path | None = None):
         self.path = Path(path)
         self.picture = None
         self.dataset = None
@@ -65,8 +66,10 @@ class SceneReader:
                 from ecw2tiff import EcwReader
 
                 os.environ.setdefault("RAYON_NUM_THREADS", str(min(4, os.cpu_count() or 1)))
-                check_scene_index_budget(self.path)
-                self.ecw = EcwReader(str(self.path))
+                inspect_ecw_layout(self.path)
+                self.ecw = EcwReader(
+                    str(self.path), index_cache=str(cache_directory) if cache_directory else None
+                )
                 info = self.ecw.info
                 self.width, self.height = info["width"], info["height"]
                 self.meta = {"kind": "ecw", "version": info["version"], "levels": info["levels"]}
@@ -108,7 +111,10 @@ class SceneReader:
             self.close()
             raise
         except BaseException as exc:
+            logging.getLogger(__name__).warning('Scene reader failed for %s', self.path, exc_info=True)
             self.close()
+            if any(message in str(exc).lower() for message in ('no space left', 'os error 112', 'not enough space')):
+                raise UserError('فضای دیسک برای فهرست ECW کافی نیست؛ در درایو محل داده‌های برنامه فضای آزاد ایجاد کن و دوباره باز کن.') from exc
             raise UserError(
                 "فایل تصویر باز نشد؛ فرمت، سلامت فایل و دسترسی به مسیر اصلی را بررسی کن."
             ) from exc

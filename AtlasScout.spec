@@ -5,6 +5,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy
 
 root = Path(SPECPATH)
 datas = [(str(root / "ui/dist"), "ui")]
+for notice in ("LICENSE", "PROVENANCE.md", "ATLAS_CHANGES.md"):
+    datas.append((str(root / "vendor/ecw2tiff" / notice), "third-party/ecw2tiff"))
 if not (root / '.model-bundle/manifest.json').is_file():
     raise RuntimeError('Run scripts/bundle-models.py before packaging the offline application')
 datas += [(str(root / '.model-bundle'), 'models')]
@@ -17,7 +19,7 @@ datas += raster_data + dll_data
 binaries = collect_dynamic_libs("pillow_heif") + raster_binaries + dll_binaries
 for package in ("sentence_transformers", "transformers", "certifi", "tokenizers"):
     datas += collect_data_files(package)
-for distribution in ("sentence-transformers", "transformers", "torch", "scikit-learn", "huggingface-hub", "ecw2tiff"):
+for distribution in ("sentence-transformers", "transformers", "torch", "scikit-learn", "huggingface-hub", "ecw2tiff", "opencv-python-headless"):
     datas += copy_metadata(distribution)
 
 hiddenimports = raster_imports + collect_submodules("sentence_transformers") + [

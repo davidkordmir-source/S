@@ -87,6 +87,10 @@ class Workshop:
                 if name not in columns:
                     db.execute(f"ALTER TABLE scenes ADD COLUMN {name} {kind}")
 
+        from .similarity import Similarity
+
+        self.similarity = Similarity(self)
+
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database, timeout=30)
@@ -140,7 +144,9 @@ class Workshop:
     def reader(self, id: str) -> SceneReader:
         info = self.scene(id)
         return SceneReader(
-            self.scene_path(id), json.loads(info["source_meta"]) if info.get("source_meta") else None
+            self.scene_path(id),
+            json.loads(info["source_meta"]) if info.get("source_meta") else None,
+            cache_directory=self.folder / "ecw-index",
         )
 
     def import_scene(self, data: bytes, name: str, job: Job) -> dict:
@@ -178,7 +184,7 @@ class Workshop:
                 if path.stat().st_mtime_ns != before.st_mtime_ns:
                     raise UserError("فایل هنگام کپی تغییر کرد؛ دوباره بازش کن.")
             job.update(45, "خواندن مشخصات فایل؛ ساخت نمای کلی بدون بارگذاری کامل تصویر")
-            with SceneReader(source) as reader:
+            with SceneReader(source, cache_directory=self.folder / "ecw-index") as reader:
                 job.update(55, f"آماده‌سازی نمای کلی {reader.width} در {reader.height} پیکسل")
                 picture = reader.read(maximum=2400)
                 notes = [*reader.notes, *picture.info.get("atlas_import_notes", [])]
@@ -256,7 +262,7 @@ class Workshop:
             picture = reader.read(maximum=4096)
         sx, sy = picture.width / info["width"], picture.height / info["height"]
         draw = ImageDraw.Draw(picture)
-        for item in run["detections"]:
+        for item in self.iter_detections(run):
             b = item["bbox"]
             x, y = b["x"] * sx, b["y"] * sy
             draw.rectangle(
@@ -618,23 +624,40 @@ class Workshop:
             "message": f"جست‌وجو تمام شد؛ {len(results)} کادر پیشنهادی پیدا شد.",
         }
 
-    def run(self, id: str) -> dict:
+    def run(self, id: str, offset: int = 0, limit: int = 200) -> dict:
         with self.connect() as db:
             row = db.execute("SELECT * FROM runs WHERE id=?", (id,)).fetchone()
         if row is None:
             raise UserError("نتیجه پیدا نشد.")
-        return {
-            **dict(row),
-            "settings": json.loads(row["settings"]),
-            "detections": json.loads(row["results"]),
-        }
+        settings = json.loads(row["settings"])
+        result = {**dict(row), "run": id, "settings": settings, "detections": json.loads(row["results"])}
+        if settings.get("method") == "similar":
+            result.update(
+                self.similarity.results(id, offset, limit),
+                total_results=settings["total_results"],
+                offset=offset,
+                limit=limit,
+            )
+        return result
+
+    def detection(self, id: str, index: int):
+        run = self.run(id)
+        if run["settings"].get("method") == "similar":
+            return self.similarity.one(id, index)
+        if not 0 <= index < len(run["detections"]):
+            raise UserError("کادر نتیجه پیدا نشد.")
+        return run["detections"][index]
+
+    def iter_detections(self, run):
+        if run.get("settings", {}).get("method") == "similar":
+            yield from self.similarity.iterate(run.get("id", run.get("run")))
+        else:
+            yield from run["detections"]
 
     def crop_detection(self, run: str, index: int) -> Image.Image:
         result = self.run(run)
-        if not 0 <= index < len(result["detections"]):
-            raise UserError("کادر نتیجه پیدا نشد.")
         scene = self.scene(result["scene"])
-        box = box_tuple(result["detections"][index]["bbox"], scene["width"], scene["height"])
+        box = box_tuple(self.detection(run, index)["bbox"], scene["width"], scene["height"])
         with self.reader(scene["id"]) as reader:
             return reader.read(box, 1024)
 

@@ -184,19 +184,12 @@ def test_desktop_bridge_uses_selected_path_without_upload(tmp_path, monkeypatch)
         services.close()
 
 
-def test_huge_ecw_index_is_rejected_before_native_allocation(tmp_path):
-    import struct
+def test_large_compressed_and_raw_ecw_directories_are_file_backed(tmp_path):
+    from atlas.ecw_validation import validate_ecw_directories
 
-    from atlas.ecw_reader import check_scene_index_budget
-
-    source = tmp_path / "huge-index.ecw"
-    header = bytearray(89)
-    header[:6] = bytes([101, 2, 1, 1, 1, 4])
-    header[14:22] = struct.pack(">HHHH", 3, 1, 64, 64)
-    level = bytes([0]) + struct.pack(">IIIII", 1_000_000, 1_000_000, 1, 1, 1)
-    source.write_bytes(header + level + bytes(4))
-    with pytest.raises(UserError, match="جدول بلوک"):
-        check_scene_index_budget(source)
+    report = validate_ecw_directories(tmp_path)
+    assert report["status"] == "passed"
+    assert all(case["former_admission_bytes"] > 128 * 1024 * 1024 for case in report["cases"])
 
 
 def test_raster_block_cache_stays_bounded_after_reader_closes():
@@ -212,3 +205,18 @@ def test_raster_block_cache_stays_bounded_after_reader_closes():
         assert rasterio.env.get_gdal_config("GDAL_CACHEMAX") == 64 * 1024 * 1024
     finally:
         rasterio.env.set_gdal_config("GDAL_CACHEMAX", original)
+
+
+def test_ecw_v1_header_is_recognized_and_windowed(tmp_path):
+    import struct
+
+    from atlas.ecw_reader import is_ecw
+
+    source = tmp_path / "v1.ecw"
+    header = bytes([101, 1, 1, 1, 1, 4]) + struct.pack(">IIHHHH", 512, 512, 1, 1, 128, 128)
+    stage = struct.pack(">BIII", 0, 256, 256, 1)
+    source.write_bytes(header + stage + struct.pack(">IB", 1, 5))
+    assert is_ecw(header)
+    with SceneReader(source) as reader:
+        assert reader.meta["version"] == 1
+        assert reader.read((100, 100, 164, 164)).getextrema() == ((0, 0),) * 3

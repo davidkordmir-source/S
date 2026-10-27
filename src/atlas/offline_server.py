@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -55,6 +55,23 @@ class SearchSettings(BaseModel):
     threshold: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
     scope: Rect | None = None
     thorough: bool = False
+
+
+class ReferenceBox(BaseModel):
+    scene: str
+    bbox: Rect
+
+
+class SimilarSettings(BaseModel):
+    scene: str
+    reference: str
+    width: int = Field(default=128, ge=8, le=8192)
+    height: int = Field(default=128, ge=8, le=8192)
+    threshold: float = Field(default=0.8, ge=0.5, le=0.99, allow_inf_nan=False)
+    scope: Rect | None = None
+    broad: bool = False
+    rotate: bool = True
+    intelligent: bool = True
 
 
 class Feedback(BaseModel):
@@ -198,6 +215,39 @@ def create_app(
     def scene_tile(id: str, level: int, x: int, y: int):
         return FileResponse(services.workshop.tile(id, level, x, y), media_type="image/jpeg")
 
+    @app.get("/api/workspace/references")
+    def references():
+        return {"references": services.workshop.similarity.references()}
+
+    @app.post("/api/workspace/references")
+    async def reference_file(request: Request, name: str = "screenshot"):
+        services.idle()
+        return services.workshop.similarity.add_file(await upload(request, 15 * 1024 * 1024), name)
+
+    @app.post("/api/workspace/references/box")
+    def reference_box(body: ReferenceBox):
+        services.idle()
+        return services.workshop.similarity.add_box(body.scene, body.bbox.model_dump())
+
+    @app.get("/api/workspace/references/{id}/image")
+    def reference_image(id: str):
+        services.workshop.similarity.reference(id)
+        return FileResponse(services.workshop.similarity.folder / f"{id}.png", media_type="image/png")
+
+    @app.post("/api/workspace/similar/plan")
+    def similar_plan(body: SimilarSettings):
+        options = body.model_dump()
+        options["scope"] = body.scope.model_dump() if body.scope else None
+        return services.workshop.similarity.plan(**options)
+
+    @app.post("/api/workspace/similar/search")
+    def similar_search(body: SimilarSettings):
+        options = body.model_dump()
+        options["scope"] = body.scope.model_dump() if body.scope else None
+        return services.jobs.submit(
+            "similar", lambda job: services.workshop.similarity.search(job, **options)
+        )
+
     @app.post("/api/workspace/concepts")
     def new_concept(body: ConceptName):
         services.idle()
@@ -262,8 +312,15 @@ def create_app(
         )
 
     @app.get("/api/workspace/runs/{id}")
-    def run(id: str):
-        return services.workshop.run(id)
+    def run(id: str, offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000)):
+        return services.workshop.run(id, offset, limit)
+
+    @app.post("/api/workspace/runs/{id}/visible")
+    def visible_detections(id: str, body: Rect):
+        run = services.workshop.run(id)
+        if run["settings"].get("method") != "similar":
+            return {"detections": run["detections"], "truncated": False}
+        return services.workshop.similarity.results(id, limit=2000, viewport=body.model_dump())
 
     @app.get("/api/workspace/runs/{id}/crops/{index}")
     def detection_image(id: str, index: int):
@@ -277,25 +334,32 @@ def create_app(
     def feedback(id: str, index: int, body: Feedback):
         services.idle()
         run = services.workshop.run(id)
-        if not 0 <= index < len(run["detections"]):
-            raise UserError("کادر پیدا نشد.")
-        return services.workshop.add_box(
-            body.concept, run["scene"], run["detections"][index]["bbox"], body.label
-        )
+        detection = services.workshop.detection(id, index)
+        return services.workshop.add_box(body.concept, run["scene"], detection["bbox"], body.label)
 
     @app.get("/api/workspace/runs/{id}/csv")
     def export_csv(id: str):
         run = services.workshop.run(id)
-        stream = io.StringIO()
-        writer = csv.writer(stream)
-        writer.writerow(["index", "x", "y", "width", "height", "model_score"])
-        for entry in run["detections"]:
-            box = entry["bbox"]
-            writer.writerow(
-                [entry["index"] + 1, box["x"], box["y"], box["width"], box["height"], entry["score"]]
-            )
-        return Response(
-            stream.getvalue().encode("utf-8-sig"),
+
+        def rows():
+            output = io.StringIO()
+            writer = csv.writer(output)
+            output.write("\ufeff")
+            writer.writerow(["index", "x", "y", "width", "height", "model_score"])
+            for entry in services.workshop.iter_detections(run):
+                box = entry["bbox"]
+                writer.writerow(
+                    [entry["index"] + 1, box["x"], box["y"], box["width"], box["height"], entry["score"]]
+                )
+                if output.tell() >= 65536:
+                    yield output.getvalue().encode("utf-8")
+                    output.seek(0)
+                    output.truncate(0)
+            if output.tell():
+                yield output.getvalue().encode("utf-8")
+
+        return StreamingResponse(
+            rows(),
             media_type="text/csv",
             headers={"Content-Disposition": 'attachment; filename="atlas-detections.csv"'},
         )

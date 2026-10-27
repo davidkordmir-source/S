@@ -19,7 +19,9 @@ if (-not (Test-Path '.venv/Scripts/python.exe')) {
 }
 $PythonExecutable = Join-Path $ProjectRoot '.venv/Scripts/python.exe'
 Invoke-Checked $PythonExecutable @('-c', "import sys,struct; assert sys.version_info[:2] == (3,12) and struct.calcsize('P')==8, 'Python 3.12 x64 is required'")
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw 'Source builds require Rust 1.99.1 (rustup.rs); the portable EXE does not need Rust.' }
 if ($SkipAI) {
+    Invoke-Checked $PythonExecutable @('-m', 'pip', 'install', './vendor/ecw2tiff')
     Invoke-Checked $PythonExecutable @('-m', 'pip', 'install', '-e', '.[dev]')
 } else {
     Invoke-Checked $PythonExecutable @('-m', 'pip', 'install', '-r', 'requirements-lock.txt')

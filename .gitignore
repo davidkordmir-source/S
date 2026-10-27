@@ -16,3 +16,6 @@ test-results/
 
 .raster-bundle/
 .raster-cache/
+
+vendor/ecw2tiff/target/
+pytest-results.xml
