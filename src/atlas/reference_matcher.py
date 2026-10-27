@@ -41,6 +41,7 @@ class ReferenceMatcher:
         self.sample = functools.lru_cache(maxsize=4)(self._sample)
         self.bank = []
         self.negative_bank = []
+        self.negative_ids = {r["id"] for r in settings.get("negative_references", [])}
         self.exclusions = (
             similarity.learning.exclusions(settings["group"], settings["scene"])
             if settings.get("group") and settings.get("scene")
@@ -59,7 +60,7 @@ class ReferenceMatcher:
 
     def _sample(self, id):
         with Image.open(self.similarity.folder / f"{id}.png") as source:
-            if np.asarray(source.convert("L"), dtype=np.float32).std() < 3:
+            if id not in self.negative_ids and np.asarray(source.convert("L"), dtype=np.float32).std() < 3:
                 raise UserError(
                     "نمونه تقریباً فقط رنگ یکنواخت دارد؛ عکسی با لبه، شکل یا بافت مشخص بده یا این نمونه را غیرفعال کن."
                 )

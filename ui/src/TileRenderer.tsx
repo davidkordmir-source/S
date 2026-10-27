@@ -71,11 +71,14 @@ export default function TileRenderer(props: Props) {
       paint(base, 0, 0, p.width, p.height);
       const visible = new Set([previewKey]);
       for (const tile of p.tiles) { visible.add(tile.key); paint(obtain(tile.key, tile.url), tile.x, tile.y, tile.width, tile.height); }
+      element.dataset.visibleTiles = String(p.tiles.length);
+      element.dataset.loadedTiles = String(p.tiles.filter(t => textures.get(t.key)?.loaded).length);
       // 128 bounded tiles, normally under 100 MiB including the bounded overview.
       if (textures.size > 128) for (const [key, item] of [...textures].sort((a, b) => a[1].used - b[1].used)) {
         if (textures.size <= 128) break;
         if (!visible.has(key)) { item.image.onload = null; item.image.onerror = null; gl!.deleteTexture(item.texture); textures.delete(key); }
       }
+      element.dataset.cachedTextures = String(textures.size);
       if (base.loaded) { element.dataset.backend = 'webgl'; latest.current.ready(true); }
     }
     const lost = (event: Event) => { event.preventDefault(); fallback(); };

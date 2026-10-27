@@ -50,13 +50,19 @@ try:
             page.locator('input[type=file]:not([multiple])[accept^=".png"]').set_input_files(str(source))
             expect(page.locator(".scene-full.loaded")).to_be_visible(timeout=30000)
             expect(page.locator(".notice.error")).to_have_count(0)
-            expect(page.locator(".scene-tiles img").first).to_be_visible(timeout=10000)
+            page.wait_for_function(
+                "Number(document.querySelector('.scene-gpu')?.dataset.loadedTiles)>0 || Boolean(document.querySelector('.scene-tiles img')?.complete)",
+                timeout=10000,
+            )
             fit_tiles = set(tiles)
             for _ in range(12):
                 page.get_by_role("button", name="بزرگ‌نمایی", exact=True).click()
             page.wait_for_timeout(800)
             assert len(set(tiles) - fit_tiles) > 0
             assert page.locator(".scene-tiles img").count() <= 64
+            if page.locator(".scene-gpu").get_attribute("data-backend") == "webgl":
+                assert int(page.locator(".scene-gpu").get_attribute("data-visible-tiles")) <= 64
+                assert int(page.locator(".scene-gpu").get_attribute("data-cached-textures")) <= 128
             bounds = page.locator("[data-testid=scene-viewport]").bounding_box()
             page.mouse.move(bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2)
             page.mouse.down()

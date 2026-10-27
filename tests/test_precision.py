@@ -225,6 +225,8 @@ def test_compute_preferences_and_directml_failure_are_observable(tmp_path, monke
     monkeypatch.setitem(sys.modules, "onnxruntime", fake)
     assert compute.details(np.zeros((1, 3, 224, 224), np.float32)) is None
     assert compute.status()["fallback_reason"] and compute.effective == "CPU"
+    assert compute.adapters == [dict(id=0)]
+    assert compute.details(np.zeros((1, 3, 224, 224), np.float32)) is None
     compute.configure("gpu")
     with pytest.raises(UserError):
         compute.details(np.zeros((1, 3, 224, 224), np.float32))
@@ -245,3 +247,16 @@ def test_upload_query_labels_and_test_partition_are_validated(tmp_path):
         assert (
             json.loads(client.get(f"/api/workspace/reference-groups/{target}/learning").text)["negative"] == 0
         )
+
+
+def test_uniform_background_is_usable_as_negative_but_cannot_be_target(precision):
+    similar = precision[0].similarity
+    reference = similar.add_reference(Image.new("RGB", (64, 48), "#447744"), "empty background")
+    settings = dict(
+        references=[], negative_references=[reference], rotate=False, broad=False, intelligent=False
+    )
+    matcher = ReferenceMatcher(similar, settings, Job("background"))
+    assert matcher.features(reference["id"])["aerial"].shape == (1, 512)
+    target_matcher = ReferenceMatcher(similar, {**settings, "negative_references": []}, Job("target"))
+    with pytest.raises(UserError):
+        target_matcher.sample(reference["id"])

@@ -97,7 +97,7 @@ class TargetLearning:
             self.similarity,
             dict(
                 references=[],
-                negative_references=[],
+                negative_references=[dict(id=r["id"]) for r in members if r["label"] == 0],
                 rotate=True,
                 broad=False,
                 intelligent=False,

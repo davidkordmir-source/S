@@ -93,6 +93,7 @@ class Compute:
         self.reason = ""
         self.session = None
         self._gpu_verified = False
+        self._dml_failed = False
         self.performance = "maximum"
         try:
             saved = json.loads(self.path.read_text())
@@ -165,6 +166,7 @@ class Compute:
         self.reason = ""
         self.session = None
         self._gpu_verified = False
+        self._dml_failed = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(dict(device=device, performance=self.performance)))
@@ -178,6 +180,8 @@ class Compute:
         return "cpu"
 
     def details(self, pixels):
+        if self.preference == "auto" and self._dml_failed:
+            return None
         if self.preference == "cpu" or self.capabilities()[0] or not self.capabilities()[1]:
             return None
         try:
@@ -207,7 +211,7 @@ class Compute:
             if not getattr(self, "_gpu_verified", False):
                 profile = Path(self.session.end_profiling())
                 try:
-                    events = json.loads(profile.read_text())
+                    events = json.loads(profile.read_text(encoding="utf-8"))
                     if not any(e.get("args", {}).get("provider") == "DmlExecutionProvider" for e in events):
                         raise RuntimeError("The DINO graph did not execute any DirectML nodes")
                 finally:
@@ -225,5 +229,5 @@ class Compute:
                 ) from exc
             self.reason = "کارت گرافیک فعال نشد؛ پردازش با CPU ادامه پیدا کرد."
             self.effective = "CPU"
-            self.adapters = []  # Avoid retrying a failing driver on every block.
+            self._dml_failed = True  # Preserve adapters and allow an explicit settings retry.
             return None

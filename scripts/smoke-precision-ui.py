@@ -61,6 +61,8 @@ def main():
                 "['webgl','fallback'].includes(document.querySelector('.scene-gpu')?.dataset.backend)"
             )
             renderer = page.locator(".scene-gpu").get_attribute("data-backend")
+            if renderer == "webgl":
+                page.wait_for_function("Number(document.querySelector('.scene-gpu')?.dataset.loadedTiles)>0")
             page.get_by_test_id("reference-input").set_input_files(
                 {"name": "positive.png", "mimeType": "image/png", "buffer": examples[0]}
             )
