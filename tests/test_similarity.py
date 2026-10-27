@@ -11,6 +11,7 @@ from PIL import Image
 from atlas.errors import Cancelled, UserError
 from atlas.jobs import Job
 from atlas.offline_server import OfflineServices, create_app
+from atlas.reference_matcher import ReferenceMatcher
 from atlas.similarity_validation import make_similarity_scene
 from atlas.visual_features import appearance_scores, dense_proposals
 from atlas.workshop import Workshop, box_tuple, intersection_over_union
@@ -44,7 +45,7 @@ def test_one_screenshot_finds_rotated_scaled_boundary_patterns(tmp_path):
     assert not workshop.concepts()
     before = workshop.engine.calls
     result2 = workshop.similarity.search(Job("similar"), **{**options, "threshold": 0.79})
-    assert workshop.engine.calls - before == 8  # only the reference, no scene re-embedding
+    assert workshop.engine.calls - before == 0  # persisted reference and scene features are reused
     assert result2["total_results"] >= 3
     assert (
         Workshop(tmp_path, workshop.engine).similarity.reference(reference["id"])["name"] == "screenshot.jpg"
@@ -221,3 +222,91 @@ def test_similarity_schema_upgrade_preserves_existing_rows(tmp_path):
     assert restored.scene(scene["id"])["id"] == scene["id"]
     with restored.connect() as db:
         assert {"detail", "structure"} <= {r[1] for r in db.execute("PRAGMA table_info(similar_candidates)")}
+
+
+def test_optional_multiview_library_and_reference_feature_cache(tmp_path):
+    workshop, scene, ref, _ = setup_scene(tmp_path)
+    library = workshop.similarity.library
+    target = library.create("ساختمان از چند زاویه")
+    library.add(target["id"], ref["id"])
+    settings = workshop.similarity.plan(scene["id"], group=target["id"], width=64, height=48)["settings"]
+    assert settings["reference_count"] == 1 and not settings["colour_evidence"]
+    ReferenceMatcher(workshop.similarity, settings, Job("prepare"))
+    before = workshop.engine.calls
+    ReferenceMatcher(workshop.similarity, settings, Job("reuse"))
+    assert workshop.engine.calls == before
+    second = workshop.similarity.add_box(scene["id"], dict(x=752, y=170, width=48, height=64))
+    library.add(target["id"], second["id"])
+    more = workshop.similarity.plan(scene["id"], group=target["id"], width=64, height=48)
+    assert more["settings"]["reference_count"] == 2
+    assert (
+        more["settings"]["references"][1]["width"] == 48 and more["settings"]["references"][1]["height"] == 64
+    )
+    ReferenceMatcher(workshop.similarity, more["settings"], Job("new-view"))
+    assert workshop.engine.calls - before == 8
+    assert more["scan"] != workshop.similarity.plan(scene["id"], ref["id"], 64, 48)["scan"]
+    library.change(target["id"], second["id"], enabled=False)
+    assert len(Workshop(tmp_path, workshop.engine).similarity.library.group(target["id"])["references"]) == 2
+    assert workshop.similarity.plan(scene["id"], group=target["id"])["settings"]["reference_count"] == 1
+    library.change(target["id"], ref["id"], enabled=False)
+    with pytest.raises(UserError, match="حداقل یک"):
+        workshop.similarity.plan(scene["id"], group=target["id"])
+
+
+def test_group_api_single_optional_many_duplicates_and_removal(tmp_path):
+    services = OfflineServices(tmp_path, OfflineTestEngine())
+    _, data, _ = make_similarity_scene()
+    with TestClient(create_app(services=services, token="profiles")) as client:
+        client.cookies.set("atlas_session", "profiles")
+        first = client.post("/api/workspace/references?name=first.jpg", content=data).json()
+        assert first["group"]
+        id = first["group"]
+        base = "/api/workspace/reference-groups/" + id
+        group = client.get(base).json()
+        assert len(group["references"]) == 1 and group["references"][0]["enabled"]
+        duplicate = client.post(
+            "/api/workspace/references?name=duplicate.jpg&group=" + id, content=data
+        ).json()
+        assert duplicate["id"] == first["id"]
+        assert len(client.get(base).json()["references"]) == 1
+        assert client.patch(base, json={"name": "هدف جدید"}).json()["name"] == "هدف جدید"
+        assert not client.patch(base + "/members/" + first["id"], json={"enabled": False}).json()[
+            "references"
+        ][0]["enabled"]
+        assert client.delete(base + "/members/" + first["id"]).json()["references"] == []
+        # Removing a view from teaching cannot break previously saved run images.
+        assert client.get("/api/workspace/references/" + first["id"] + "/image").status_code == 200
+
+
+def test_colour_only_uniform_reference_cannot_start_a_search(tmp_path):
+    workshop, scene, _, _ = setup_scene(tmp_path)
+    ref = workshop.similarity.add_reference(Image.new("RGB", (64, 48), "red"), "colour-only.png")
+    with pytest.raises(UserError, match="رنگ یکنواخت"):
+        workshop.similarity.search(Job("colour"), scene=scene["id"], reference=ref["id"], width=64, height=48)
+
+
+def test_old_independent_references_migrate_without_merging_and_deduplicate(tmp_path):
+    workshop, scene, ref, _ = setup_scene(tmp_path)
+    other = workshop.similarity.add_box(scene["id"], dict(x=752, y=170, width=48, height=64))
+    with workshop.connect() as db:
+        db.execute("DELETE FROM reference_members")
+        db.execute("DELETE FROM reference_groups")
+        db.execute("DELETE FROM similarity_meta WHERE key='groups-v1'")
+    restored = Workshop(tmp_path, workshop.engine).similarity
+    groups = restored.library.groups()
+    assert len(groups) == 2 and all(g["total"] == 1 for g in groups)
+    original = next(g for g in groups if restored.library.group(g["id"])["references"][0]["id"] == ref["id"])
+    copy = restored.add_file((restored.folder / f"{ref['id']}.png").read_bytes(), "copy.png")
+    assert restored.library.add(original["id"], copy["id"])["id"] == ref["id"]
+    assert len(restored.library.group(original["id"])["references"]) == 1
+    assert restored.reference(other["id"])["id"] == other["id"]
+
+
+def test_corrupt_reference_feature_cache_is_rebuilt(tmp_path):
+    workshop, scene, ref, _ = setup_scene(tmp_path)
+    settings = workshop.similarity.plan(scene["id"], ref["id"], 64, 48)["settings"]
+    ReferenceMatcher(workshop.similarity, settings, Job("prepare"))
+    next((workshop.similarity.folder / "features").glob("*.npz")).write_bytes(b"interrupted cache write")
+    before = workshop.engine.calls
+    ReferenceMatcher(workshop.similarity, settings, Job("recover"))
+    assert workshop.engine.calls - before == 8

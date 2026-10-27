@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas-scout"
-version = "0.5.0"
+version = "0.6.0"
 description = "Windows desktop building search with local image and Persian text embeddings"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -11,21 +11,14 @@ import uuid
 from pathlib import Path
 
 import cv2
-import numpy as np
 from PIL import Image
 
 from .config import DETAIL_REVISION, INDEX_VERSION
 from .errors import UserError
 from .image_io import read_picture
-from .visual_features import (
-    appearance_scores,
-    compare,
-    dense_proposals,
-    descriptor,
-    model_picture,
-    peaks,
-    structural,
-)
+from .reference_library import ReferenceLibrary
+from .reference_matcher import ReferenceMatcher
+from .visual_features import shape_picture
 from .workshop import box_tuple, intersection_over_union, rect_dict
 
 CORE = 768
@@ -58,6 +51,10 @@ class Similarity:
                 for column in ("detail", "structure"):
                     if column not in existing:
                         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
+                for column, kind in (("matched_reference", "TEXT"), ("support", "INTEGER")):
+                    if column not in existing:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        self.library = ReferenceLibrary(self)
 
     def references(self):
         with self.workshop.connect() as db:
@@ -121,18 +118,28 @@ class Similarity:
     def plan(
         self,
         scene,
-        reference,
-        width,
-        height,
+        reference=None,
+        width=128,
+        height=128,
         scope=None,
         broad=False,
         rotate=True,
         intelligent=True,
+        group=None,
         **ignored,
     ):
         info = self.workshop.scene(scene)
         self.workshop.scene_path(scene)
-        self.reference(reference)
+        references = (
+            [r for r in self.library.group(group)["references"] if r["enabled"]]
+            if group
+            else [self.reference(reference)]
+            if reference
+            else []
+        )
+        if not references:
+            raise UserError("حداقل یک نمونهٔ فعال برای هدف اضافه کن؛ چند نمونه اجباری نیست.")
+        reference = references[0]["id"]
         if not (8 <= width <= 8192 and 8 <= height <= 8192):
             raise UserError("اندازهٔ هدف باید بین ۸ و ۸۱۹۲ پیکسل باشد.")
         box = (
@@ -141,6 +148,19 @@ class Similarity:
             else (0, 0, info["width"], info["height"])
         )
         factor = 1 << max(0, math.floor(math.log2(max(width, height) / 128)))
+        views = [
+            dict(
+                id=r["id"],
+                name=r["name"],
+                width=width
+                if i == 0
+                else max(8, round(max(width, height) * r["width"] / max(r["width"], r["height"]))),
+                height=height
+                if i == 0
+                else max(8, round(max(width, height) * r["height"] / max(r["width"], r["height"]))),
+            )
+            for i, r in enumerate(references)
+        ]
         span = CORE * factor
         columns = math.ceil((box[2] - box[0]) / span)
         rows = math.ceil((box[3] - box[1]) / span)
@@ -148,6 +168,10 @@ class Similarity:
             method="similar",
             scene=scene,
             reference=reference,
+            group=group,
+            references=views,
+            reference_count=len(views),
+            colour_evidence=False,
             width=width,
             height=height,
             scope=rect_dict(box),
@@ -159,7 +183,7 @@ class Similarity:
             columns=columns,
             windows=columns * rows,
             feature=INDEX_VERSION,
-            algorithm="reference-v4-dense-dino:" + DETAIL_REVISION[:12],
+            algorithm="reference-v5-multiview-shape:" + DETAIL_REVISION[:12],
         )
         scan = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         with self.workshop.connect() as db:
@@ -179,66 +203,21 @@ class Similarity:
         plan = self.plan(**options)
         settings, scan = plan["settings"], plan["scan"]
         reference = self.reference(settings["reference"])
-        with Image.open(self.folder / f"{reference['id']}.png") as original:
-            sample = original.convert("RGB")
+        matcher = ReferenceMatcher(self, settings, job)
         factor, span, columns = settings["factor"], settings["span"], settings["columns"]
-        scales = (0.5, 0.65, 0.8, 1, 1.25, 1.6, 2) if settings["broad"] else (0.8, 1, 1.25)
-        templates = []
-        for scale in scales:
-            tw, th = (
-                max(8, round(settings["width"] * scale / factor)),
-                max(8, round(settings["height"] * scale / factor)),
-            )
-            resized = sample.resize((tw, th), Image.Resampling.LANCZOS)
-            for angle in ANGLES if settings["rotate"] else (0,):
-                rotated = resized.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
-                template = np.asarray(rotated).copy()
-                valid = None
-                if angle % 90:
-                    mask = Image.new("L", resized.size, 255).rotate(
-                        angle, resample=Image.Resampling.BICUBIC, expand=True
-                    )
-                    valid = (np.asarray(mask) > 250).astype(np.uint8) * 255
-                templates.append((template, angle, valid))
-        margin = max(max(t.shape[:2]) for t, _, _ in templates) * factor
-        box = box_tuple(
-            settings["scope"],
-            self.workshop.scene(settings["scene"])["width"],
-            self.workshop.scene(settings["scene"])["height"],
+        margin = math.ceil(
+            max(max(v["width"], v["height"]) for v in settings["references"])
+            * max(matcher.scales)
+            * (2**0.5 if settings["rotate"] else 1)
         )
-        templates = [
-            (t, a, mask)
-            for t, a, mask in templates
-            if t.shape[1] * factor <= box[2] - box[0] and t.shape[0] * factor <= box[3] - box[1]
-        ]
-        if not templates:
-            raise UserError("محدوده از نمونه کوچک‌تر است؛ اندازهٔ هدف را کوچک‌تر یا محدوده را بزرگ‌تر کن.")
-        reference_vectors = None
-        detail_references = None
-        if settings["intelligent"]:
-            job.update(1, "آماده‌سازی نمونهٔ تصویری برای مقایسهٔ هوشمند")
-            reference_vectors = np.asarray(
-                self.workshop.engine.images(
-                    [sample.rotate(a, expand=True) for a in (ANGLES if settings["rotate"] else (0,))]
-                ),
-                dtype=np.float32,
-            )
-            job.check()
-            detail_references = [
-                descriptor(features)
-                for features in self.workshop.engine.details(
-                    [
-                        model_picture(sample.rotate(a, resample=Image.Resampling.BICUBIC, expand=True))
-                        for a in (ANGLES if settings["rotate"] else (0,))
-                    ]
-                )
-            ]
-        if reference_vectors is not None and (
-            reference_vectors.ndim != 2
-            or reference_vectors.shape[1] != 512
-            or not np.isfinite(reference_vectors).all()
+        info = self.workshop.scene(settings["scene"])
+        box = box_tuple(settings["scope"], info["width"], info["height"])
+        if not any(
+            v["width"] * min(matcher.scales) <= box[2] - box[0]
+            and v["height"] * min(matcher.scales) <= box[3] - box[1]
+            for v in settings["references"]
         ):
-            raise UserError("ویژگی‌های نمونهٔ مرجع معتبر نیست؛ سلامت فایل مدل را بررسی کن.")
+            raise UserError("محدوده از نمونه کوچک‌تر است؛ اندازهٔ هدف را کوچک‌تر یا محدوده را بزرگ‌تر کن.")
         with self.workshop.connect() as db:
             db.execute(
                 "INSERT OR IGNORE INTO similar_scans VALUES(?,?,?,?,?,?,?)",
@@ -267,149 +246,21 @@ class Similarity:
                 picture = reader.read(
                     (x0, y0, x1, y1), max(1, math.ceil(max(x1 - x0, y1 - y0) / factor)), exact=True
                 )
-                image = np.asarray(picture)
-                edges = structural(image)
-                # Account for the last partial tile's rounded output dimensions.
                 sx, sy = (x1 - x0) / picture.width, (y1 - y0) / picture.height
-                candidates = []
-                for template, angle, valid in templates:
-                    job.check()
-                    th, tw = template.shape[:2]
-                    if th > image.shape[0] or tw > image.shape[1]:
-                        continue
-                    constant = np.asarray(template, dtype=np.float32).std(axis=(0, 1)).max() < 3
-                    method = cv2.TM_SQDIFF_NORMED if constant else cv2.TM_CCOEFF_NORMED
-                    similarity = cv2.matchTemplate(image, template, method, mask=valid)
-                    if constant:
-                        similarity = 1 - similarity
-                    similarity = np.nan_to_num(similarity, nan=-1, posinf=-1, neginf=-1)
-                    template_edges = structural(template)
-                    edge_map = (
-                        cv2.matchTemplate(edges, template_edges, cv2.TM_CCOEFF_NORMED, mask=valid)
-                        if template_edges.std() > 1e-3
-                        else np.zeros(similarity.shape, np.float32)
-                    )
-                    edge_map = np.nan_to_num(edge_map, nan=-1, posinf=-1, neginf=-1)
-                    # Shape proposals also survive changed roof/soil colours.
-                    proposal = np.maximum(similarity, 0.95 * edge_map)
-                    limit_x = min(similarity.shape[1], max(0, math.ceil(min(span, box[2] - x0) / sx)))
-                    limit_y = min(similarity.shape[0], max(0, math.ceil(min(span, box[3] - y0) / sy)))
-                    proposal = proposal[:limit_y, :limit_x]
-                    if not proposal.size:
-                        continue
-                    for px, py, confidence in peaks(proposal, 0.35, min(tw, th) / 2):
-                        b = (
-                            round(x0 + px * sx),
-                            round(y0 + py * sy),
-                            min(box[2], round(x0 + (px + tw) * sx)),
-                            min(box[3], round(y0 + (py + th) * sy)),
-                        )
-                        candidates.append(
-                            (b, confidence, angle, float(similarity[py, px]), float(edge_map[py, px]))
-                        )
-                candidates = local_suppress(candidates)
-                if detail_references is not None:
-                    feature_candidates = []
-                    job.update(
-                        2 + tile / plan["windows"] * 88,
-                        f"بررسی مستقل ویژگی‌های بصری: بخش {tile + 1:,} از {plan['windows']:,}",
-                    )
-                    for bounds, confidence in dense_proposals(
-                        picture,
-                        self.workshop.engine,
-                        detail_references,
-                        settings["width"] / sx,
-                        settings["height"] / sy,
-                        scales,
-                        settings["rotate"],
-                        job.check,
-                    ):
-                        px0, py0, px1, py1 = bounds
-                        if (
-                            px0 < 0
-                            or py0 < 0
-                            or px1 > picture.width
-                            or py1 > picture.height
-                            or px0 * sx >= span
-                            or py0 * sy >= span
-                        ):
-                            continue
-                        b = (
-                            round(x0 + px0 * sx),
-                            round(y0 + py0 * sy),
-                            round(x0 + px1 * sx),
-                            round(y0 + py1 * sy),
-                        )
-                        # Keep both independent proposal paths until crop reranking.
-                        # Exact RGB proposals win local ties; DINO is never gated by RGB.
-                        feature_candidates.append((b, min(0.94, confidence), 0, None, None))
-                    # Proposal scores from different models are not comparable.
-                    # Preserve both paths until the final, common crop score.
-                    candidates.extend(local_suppress(feature_candidates, overlap=0.7))
+                candidates = matcher.proposals(
+                    shape_picture(picture), sx, sy, span, x0, y0, box, local_suppress
+                )
                 records = []
                 for start in range(0, len(candidates), 16):
                     job.check()
                     chunk = candidates[start : start + 16]
-                    semantic = np.ones(len(chunk), np.float32)
                     crops = [reader.read(item[0], 384, exact=True) for item in chunk]
-                    detail_scores = [None] * len(chunk)
-                    if reference_vectors is not None:
-                        vectors = np.asarray(
-                            self.workshop.engine.images(crops),
-                            np.float32,
-                        )
-                        if vectors.shape != (len(chunk), 512) or not np.isfinite(vectors).all():
-                            raise UserError("مقایسهٔ هوشمند کامل نشد.")
-                        semantic = np.clip((vectors @ reference_vectors.T).max(axis=1), 0, 1)
-                        detail_scores = [
-                            compare(descriptor(features), detail_references)[0]
-                            for features in self.workshop.engine.details(
-                                [model_picture(crop) for crop in crops]
-                            )
-                        ]
-                    for item, crop, ai, detail in zip(chunk, crops, semantic, detail_scores, strict=True):
-                        b, _, angle, appearance, edge = item
-                        if appearance is None:
-                            appearance, edge, angle = appearance_scores(
-                                crop, sample, ANGLES if settings["rotate"] else (0,)
-                            )
-                        appearance, edge = max(0.0, appearance), max(0.0, edge)
-                        visual = max(appearance, 0.95 * edge)
-                        score = visual
-                        if detail is not None:
-                            # Two independent evidence paths: exact/structural matching
-                            # and transferable local features. A weak pixel match cannot
-                            # veto a strong DINO match, but CLIP alone cannot accept it.
-                            # DINO/CLIP cosines have a substantial shared-image
-                            # baseline. Stretch [0.5,1] to [0,1] before fusion so
-                            # unrelated terrain does not receive 60–80% scores.
-                            learned = max(0.0, (detail - 0.5) * 2)
-                            semantic_evidence = max(0.0, (float(ai) - 0.5) * 2)
-                            score = max(
-                                0.85 * visual + 0.15 * semantic_evidence,
-                                0.85 * learned + 0.15 * semantic_evidence,
-                            )
-                        records.append(
-                            (
-                                scan,
-                                tile,
-                                b[0],
-                                b[1],
-                                b[2] - b[0],
-                                b[3] - b[1],
-                                score,
-                                appearance,
-                                max(0.0, (float(ai) - 0.5) * 2) if reference_vectors is not None else None,
-                                angle,
-                                max(0.0, (detail - 0.5) * 2) if detail is not None else None,
-                                edge,
-                            )
-                        )
+                    records.extend(matcher.score(chunk, crops, scan, tile))
                 job.check()
                 with self.workshop.connect() as db:
                     db.execute("DELETE FROM similar_candidates WHERE scan=? AND tile=?", (scan, tile))
                     db.executemany(
-                        "INSERT INTO similar_candidates(scan,tile,x,y,w,h,score,appearance,semantic,angle,detail,structure) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO similar_candidates(scan,tile,x,y,w,h,score,appearance,semantic,angle,detail,structure,matched_reference,support) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         records,
                     )
                     db.execute("UPDATE similar_scans SET next_tile=? WHERE id=?", (tile + 1, scan))
@@ -440,7 +291,7 @@ class Similarity:
                     ):
                         continue
                     result = db.execute(
-                        "INSERT INTO similar_detections(run,idx,x,y,w,h,score,appearance,semantic,angle,detail,structure) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO similar_detections(run,idx,x,y,w,h,score,appearance,semantic,angle,detail,structure,matched_reference,support) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             run,
                             total,
@@ -454,6 +305,8 @@ class Similarity:
                             row["angle"],
                             row["detail"],
                             row["structure"],
+                            row["matched_reference"],
+                            row["support"],
                         ),
                     )
                     db.execute(
@@ -493,6 +346,8 @@ class Similarity:
             appearance=round(row["appearance"], 5),
             semantic=round(row["semantic"], 5) if row["semantic"] is not None else None,
             angle=row["angle"],
+            matched_reference=row["matched_reference"],
+            support=row["support"],
             detail=round(row["detail"], 5) if row["detail"] is not None else None,
             structure=round(row["structure"], 5) if row["structure"] is not None else None,
             level=similarity_level(row["score"]),

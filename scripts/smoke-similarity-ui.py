@@ -118,7 +118,8 @@ def main():
                 const data=new DataTransfer();data.items.add(new File([await response.blob()],'pasted.png',{type:'image/png'}));
                 window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true}));
             }""")
-            expect(page.locator(".reference-preview b")).to_have_text("pasted.png")
+            expect(page.locator(".teaching-gallery article")).to_have_count(2)  # duplicate pasted pixels do not add another view
+            expect(page.locator(".reference-preview b")).to_have_text("screenshot.jpg")
             for width, height in [(1080, 800), (1440, 1050)]:
                 page.set_viewport_size({"width": width, "height": height})
                 assert not page.evaluate("document.documentElement.scrollWidth>innerWidth")

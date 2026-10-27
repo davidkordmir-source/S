@@ -60,11 +60,21 @@ class SearchSettings(BaseModel):
 class ReferenceBox(BaseModel):
     scene: str
     bbox: Rect
+    group: str | None = None
+
+
+class ReferenceMember(BaseModel):
+    reference: str
+
+
+class ReferenceEnabled(BaseModel):
+    enabled: bool
 
 
 class SimilarSettings(BaseModel):
     scene: str
-    reference: str
+    reference: str | None = None
+    group: str | None = None
     width: int = Field(default=128, ge=8, le=8192)
     height: int = Field(default=128, ge=8, le=8192)
     threshold: float = Field(default=0.55, ge=0.4, le=0.99, allow_inf_nan=False)
@@ -220,14 +230,62 @@ def create_app(
         return {"references": services.workshop.similarity.references()}
 
     @app.post("/api/workspace/references")
-    async def reference_file(request: Request, name: str = "screenshot"):
+    async def reference_file(request: Request, name: str = "screenshot", group: str | None = None):
         services.idle()
-        return services.workshop.similarity.add_file(await upload(request, 15 * 1024 * 1024), name)
+        similar = services.workshop.similarity
+        if group:
+            similar.library.group(group)
+        ref = similar.add_file(await upload(request, 15 * 1024 * 1024), name)
+        return similar.library.attach_upload(ref, group)
 
     @app.post("/api/workspace/references/box")
     def reference_box(body: ReferenceBox):
         services.idle()
-        return services.workshop.similarity.add_box(body.scene, body.bbox.model_dump())
+        similar = services.workshop.similarity
+        if body.group:
+            similar.library.group(body.group)
+        return similar.library.attach_upload(similar.add_box(body.scene, body.bbox.model_dump()), body.group)
+
+    @app.get("/api/workspace/reference-groups")
+    def reference_groups():
+        return {
+            "groups": services.workshop.similarity.library.groups(),
+            "active": services.workshop.similarity.library.active(),
+        }
+
+    @app.post("/api/workspace/reference-groups/{id}/select")
+    def select_reference_group(id: str):
+        services.idle()
+        return services.workshop.similarity.library.select(id)
+
+    @app.post("/api/workspace/reference-groups")
+    def create_reference_group(body: ConceptName):
+        services.idle()
+        return services.workshop.similarity.library.create(body.name)
+
+    @app.get("/api/workspace/reference-groups/{id}")
+    def reference_group(id: str):
+        return services.workshop.similarity.library.group(id)
+
+    @app.patch("/api/workspace/reference-groups/{id}")
+    def rename_reference_group(id: str, body: ConceptName):
+        services.idle()
+        return services.workshop.similarity.library.rename(id, body.name)
+
+    @app.post("/api/workspace/reference-groups/{id}/members")
+    def attach_reference(id: str, body: ReferenceMember):
+        services.idle()
+        return services.workshop.similarity.library.add(id, body.reference)
+
+    @app.patch("/api/workspace/reference-groups/{id}/members/{reference}")
+    def enable_reference(id: str, reference: str, body: ReferenceEnabled):
+        services.idle()
+        return services.workshop.similarity.library.change(id, reference, body.enabled)
+
+    @app.delete("/api/workspace/reference-groups/{id}/members/{reference}")
+    def detach_reference(id: str, reference: str):
+        services.idle()
+        return services.workshop.similarity.library.change(id, reference, remove=True)
 
     @app.get("/api/workspace/references/{id}/image")
     def reference_image(id: str):
@@ -364,7 +422,9 @@ def create_app(
                         "pixel_similarity",
                         "structure_similarity",
                         "detail_similarity",
-                        "semantic_similarity",
+                    "semantic_similarity",
+                    "matched_reference",
+                    "supporting_views",
                     ]
                     if similar
                     else []
@@ -381,7 +441,9 @@ def create_app(
                             entry["appearance"],
                             entry["structure"],
                             entry["detail"],
-                            entry["semantic"],
+                        entry["semantic"],
+                        entry["matched_reference"],
+                        entry["support"],
                         ]
                         if similar
                         else []

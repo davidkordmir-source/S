@@ -6,10 +6,19 @@ import math
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 PATCH = 14
 BLOCK = 448
+
+
+def shape_picture(picture):
+    """Discard hue/saturation for every proposal and learned feature input.
+
+    Local brightness contrast remains useful for geometry/texture; it cannot
+    turn a colour histogram into evidence of an object match.
+    """
+    return ImageOps.autocontrast(picture.convert("L"), cutoff=0).convert("RGB")
 
 
 def unit(values):
@@ -40,9 +49,9 @@ def descriptor(features):
 def compare(candidate, references):
     """Score rotation alternatives using object and 3×3 spatial descriptors."""
     scores = [
-        0.5 * float(candidate["cls"] @ ref["cls"])
-        + 0.2 * float(candidate["pooled"] @ ref["pooled"])
-        + 0.3 * float((candidate["spatial"] * ref["spatial"]).sum(axis=-1).mean())
+        0.3 * float(candidate["cls"] @ ref["cls"])
+        + 0.1 * float(candidate["pooled"] @ ref["pooled"])
+        + 0.6 * float((candidate["spatial"] * ref["spatial"]).sum(axis=-1).mean())
         for ref in references
     ]
     best = int(np.argmax(scores))
@@ -72,7 +81,7 @@ def positions(length, step):
     return sorted({*range(0, max(1, length - BLOCK + 1), step), max(0, length - BLOCK)})
 
 
-def dense_proposals(picture, engine, references, width, height, scales, rotate, check):
+def dense_proposals(picture, engine, references, width, height, scales, rotate, check, sizes=None):
     """DINO proposal path independent of RGB/template gates.
 
     Features are bounded to one 448×448 block. Overlap covers complete target
@@ -86,16 +95,17 @@ def dense_proposals(picture, engine, references, width, height, scales, rotate, 
     reference_vectors = np.array([r["pooled"] for r in references], np.float32)
     reference_spatial = np.array([r["spatial"] for r in references], np.float32)
     geometries = set()
-    for scale in scales:
-        tw, th = width * ratio * scale, height * ratio * scale
-        for angle in (0, 45, 90) if rotate else (0,):
-            if angle == 90:
-                tw1, th1 = th, tw
-            elif angle == 45:
-                tw1 = th1 = (tw + th) / 2**0.5
-            else:
-                tw1, th1 = tw, th
-            geometries.add((max(1, round(tw1 / PATCH)), max(1, round(th1 / PATCH))))
+    for vw, vh in sizes or [(width, height)]:
+        for scale in scales:
+            tw, th = vw * ratio * scale, vh * ratio * scale
+            for angle in (0, 45, 90) if rotate else (0,):
+                if angle == 90:
+                    tw1, th1 = th, tw
+                elif angle == 45:
+                    tw1 = th1 = (tw + th) / 2**0.5
+                else:
+                    tw1, th1 = tw, th
+                geometries.add((max(1, round(tw1 / PATCH)), max(1, round(th1 / PATCH))))
     for top in positions(full_height, step):
         for left in positions(full_width, step):
             check()

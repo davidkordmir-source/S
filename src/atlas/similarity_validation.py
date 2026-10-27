@@ -154,6 +154,9 @@ def validate_similarity(root: Path):
         assert all(
             any(intersection_over_union(b, target) > 0.5 for b in proposals) for target in variant_truth
         )
+        from .teaching_validation import validate_teaching
+
+        teaching = validate_teaching(workshop, root)
         assert not attempts
         report = dict(
             status="passed",
@@ -174,6 +177,7 @@ def validate_similarity(root: Path):
             feature_proposals_without_pixel_gate=True,
             ranked_variant_scores=[round(d["score"] * 100, 1) for d in ranked[:3]],
             level_counts=variant_result["level_counts"],
+            teaching=teaching,
             external_connections=len(attempts),
             note="Controlled matching fixture, not measured satellite detection accuracy",
         )
