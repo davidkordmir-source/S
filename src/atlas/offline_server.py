@@ -67,7 +67,7 @@ class SimilarSettings(BaseModel):
     reference: str
     width: int = Field(default=128, ge=8, le=8192)
     height: int = Field(default=128, ge=8, le=8192)
-    threshold: float = Field(default=0.8, ge=0.5, le=0.99, allow_inf_nan=False)
+    threshold: float = Field(default=0.55, ge=0.4, le=0.99, allow_inf_nan=False)
     scope: Rect | None = None
     broad: bool = False
     rotate: bool = True
@@ -312,15 +312,24 @@ def create_app(
         )
 
     @app.get("/api/workspace/runs/{id}")
-    def run(id: str, offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000)):
-        return services.workshop.run(id, offset, limit)
+    def run(
+        id: str,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(200, ge=1, le=1000),
+        level: Literal["all", "high", "medium", "review"] = "all",
+        focus: int | None = Query(None, ge=0),
+    ):
+        if focus is not None:
+            services.workshop.run(id)
+            offset = services.workshop.similarity.page_for(id, focus, level, limit)
+        return services.workshop.run(id, offset, limit, level)
 
     @app.post("/api/workspace/runs/{id}/visible")
-    def visible_detections(id: str, body: Rect):
+    def visible_detections(id: str, body: Rect, level: Literal["all", "high", "medium", "review"] = "all"):
         run = services.workshop.run(id)
         if run["settings"].get("method") != "similar":
             return {"detections": run["detections"], "truncated": False}
-        return services.workshop.similarity.results(id, limit=2000, viewport=body.model_dump())
+        return services.workshop.similarity.results(id, limit=2000, viewport=body.model_dump(), level=level)
 
     @app.get("/api/workspace/runs/{id}/crops/{index}")
     def detection_image(id: str, index: int):
@@ -345,11 +354,38 @@ def create_app(
             output = io.StringIO()
             writer = csv.writer(output)
             output.write("\ufeff")
-            writer.writerow(["index", "x", "y", "width", "height", "model_score"])
+            similar = run["settings"].get("method") == "similar"
+            writer.writerow(
+                ["index", "x", "y", "width", "height", "model_score"]
+                + (
+                    [
+                        "similarity_percent",
+                        "level",
+                        "pixel_similarity",
+                        "structure_similarity",
+                        "detail_similarity",
+                        "semantic_similarity",
+                    ]
+                    if similar
+                    else []
+                )
+            )
             for entry in services.workshop.iter_detections(run):
                 box = entry["bbox"]
                 writer.writerow(
                     [entry["index"] + 1, box["x"], box["y"], box["width"], box["height"], entry["score"]]
+                    + (
+                        [
+                            entry["similarity_percent"],
+                            entry["level"],
+                            entry["appearance"],
+                            entry["structure"],
+                            entry["detail"],
+                            entry["semantic"],
+                        ]
+                        if similar
+                        else []
+                    )
                 )
                 if output.tell() >= 65536:
                     yield output.getvalue().encode("utf-8")

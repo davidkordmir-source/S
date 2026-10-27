@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Focus, Hand, ImagePlus, Minus, Plus, ScanLine, SquareDashed, SquareMinus, SquarePlus } from 'lucide-react';
-import { Detection, Example, fa, post, Rect, Scene } from './offline-api';
+import { Detection, Example, fa, grade, Level, levels, percent, post, Rect, Scene } from './offline-api';
 
 export type Tool = 'pan' | 'positive' | 'negative' | 'scope' | 'reference';
 type Transform = { scale: number; x: number; y: number };
-type Props = { advanced?: boolean; reference?: Rect | null; similarRun?: string | null; scene: Scene | null; tool: Tool; setTool: (tool: Tool) => void; examples: Example[]; detections: Detection[]; scope: Rect | null; focus: Rect | null; selected: number | null; busy: boolean; canAnnotate: boolean; onBox: (box: Rect) => void; onImport: () => void; onSelect: (index: number) => void };
+type Props = { advanced?: boolean; reference?: Rect | null; similarRun?: string | null; level?: Level; scene: Scene | null; tool: Tool; setTool: (tool: Tool) => void; examples: Example[]; detections: Detection[]; scope: Rect | null; focus: Rect | null; selected: number | null; busy: boolean; canAnnotate: boolean; onBox: (box: Rect) => void; onImport: () => void; onSelect: (index: number) => void };
 
-export default function ImageCanvas({ advanced = true, reference, similarRun, scene, tool, setTool, examples, detections, scope, focus, selected, busy, canAnnotate, onBox, onImport, onSelect }: Props) {
+export default function ImageCanvas({ advanced = true, reference, similarRun, level = 'all', scene, tool, setTool, examples, detections, scope, focus, selected, busy, canAnnotate, onBox, onImport, onSelect }: Props) {
   const viewport = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ scale: 1, x: 0, y: 0 });
   const current = useRef(transform); current.current = transform;
@@ -81,11 +81,11 @@ export default function ImageCanvas({ advanced = true, reference, similarRun, sc
     const height = Math.min(scene.height, (bounds.height - tileView.y) / tileView.scale) - y;
     if (width < 8 || height < 8) return;
     let stopped = false;
-    post<{ detections: Detection[]; truncated: boolean }>(`/workspace/runs/${similarRun}/visible`, { x, y, width, height }).then(result => {
+    post<{ detections: Detection[]; truncated: boolean }>(`/workspace/runs/${similarRun}/visible?level=${level}`, { x, y, width, height }).then(result => {
       if (!stopped) { setVisible(result.detections); setTruncated(result.truncated); }
     }).catch(() => { if (!stopped) setVisible(detections); });
     return () => { stopped = true; };
-  }, [similarRun, scene?.id, tileView, bounds]);
+  }, [similarRun, level, scene?.id, tileView, bounds]);
   const displayed = similarRun ? visible : detections;
   const pixel = (clientX: number, clientY: number, value = current.current) => {
     const bounds = viewport.current!.getBoundingClientRect();
@@ -115,12 +115,13 @@ export default function ImageCanvas({ advanced = true, reference, similarRun, sc
         <div className="scene-tiles">{tiles.map(tile => <img key={tile.key} src={tile.url} alt="" draggable={false} style={{ left: tile.x, top: tile.y, width: tile.width, height: tile.height }} />)}</div>
         <svg className="annotation-layer" width={scene.width} height={scene.height} viewBox={`0 0 ${scene.width} ${scene.height}`}>
           {examples.filter(item => item.scene === scene.id && item.bbox).map(item => <rect key={item.id} {...item.bbox!} className={item.label ? 'example-positive' : 'example-negative'} strokeWidth={1.5/transform.scale}><title>{item.label ? 'نمونهٔ درست' : 'نمونهٔ غلط'}</title></rect>)}
-          {displayed.map(item => <g key={item.index} className={`detection-box ${selected === item.index ? 'selected' : ''}`} onPointerDown={event => { if (tool === 'pan') event.stopPropagation(); }} onClick={event => { if (tool === 'pan') { event.stopPropagation(); onSelect(item.index); } }}><rect {...item.bbox} strokeWidth={(selected === item.index ? 3 : 1.5)/transform.scale} /><rect x={item.bbox.x} y={Math.max(0,item.bbox.y-21/transform.scale)} width={55/transform.scale} height={21/transform.scale} className="detection-tag" /><text x={item.bbox.x+5/transform.scale} y={Math.max(14/transform.scale,item.bbox.y-6/transform.scale)} fontSize={11/transform.scale} direction="ltr">{fa(item.index+1)} · {fa(item.score,2)}</text></g>)}
+          {displayed.map(item => <g key={item.index} className={`detection-box ${similarRun ? `level-${grade(item.score)}` : ''} ${selected === item.index ? 'selected' : ''}`} onPointerDown={event => { if (tool === 'pan') event.stopPropagation(); }} onClick={event => { if (tool === 'pan') { event.stopPropagation(); onSelect(item.index); } }}><title>{`نتیجه ${fa(item.index+1)} · ${percent(item.score)} شباهت · ${levels.find(l => l.id === grade(item.score))?.label}`}</title><rect {...item.bbox} strokeWidth={(selected === item.index ? 3 : 1.5)/transform.scale} /><rect x={item.bbox.x} y={Math.max(0,item.bbox.y-21/transform.scale)} width={92/transform.scale} height={21/transform.scale} className="detection-tag" /><text x={item.bbox.x+5/transform.scale} y={Math.max(14/transform.scale,item.bbox.y-6/transform.scale)} fontSize={11/transform.scale} direction="ltr">{fa(item.index+1)} · {similarRun ? percent(item.score) : fa(item.score,2)}</text></g>)}
           {reference && <rect {...reference} className="reference-box" strokeWidth={2/transform.scale} />}
           {scope && <rect {...scope} className="scope-box" strokeWidth={2/transform.scale} strokeDasharray={`${8/transform.scale} ${5/transform.scale}`} />}
           {draft && <rect {...draft} className={`draft-box ${tool}`} strokeWidth={2/transform.scale} />}
         </svg>
       </div>}
+      {similarRun && <div className="map-level-legend" aria-label="راهنمای رنگ شباهت">{levels.filter(l => level === 'all' || level === l.id).map(l => <span className={`level-${l.id}`} key={l.id}><i />{l.label} <small>{l.range}</small></span>)}</div>}
       {truncated && <div className="density-note">تعداد نتایج این نما زیاد است؛ برای دیدن جزئیات بیشتر بزرگ‌نمایی کن.</div>}
       {scene && <div className={`canvas-instruction ${tool}`}><span />{tool === 'reference' ? 'دور قسمت مرجع کادر بکش؛ موارد مشابه همین قسمت جست‌وجو می‌شوند' : tool === 'positive' ? 'دور چیزی که می‌خواهی پیدا شود کادر بکش' : tool === 'negative' ? 'دور چیزی که هدف تو نیست کادر بکش' : tool === 'scope' ? 'بخشی از تصویر را برای جست‌وجو انتخاب کن' : 'برای جابجایی بکش؛ برای بزرگ‌نمایی از چرخ ماوس استفاده کن'}</div>}
     </div>

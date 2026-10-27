@@ -57,7 +57,7 @@ jobs:
           ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-similar-smoke
         run: |
           $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--similarity-smoke-test' -PassThru
-          if (-not $ApplicationProcess.WaitForExit(300000)) { $ApplicationProcess.Kill(); throw 'Similarity smoke timed out.' }
+          if (-not $ApplicationProcess.WaitForExit(600000)) { $ApplicationProcess.Kill(); throw 'Similarity smoke timed out.' }
           if ($ApplicationProcess.ExitCode -ne 0) { throw 'Actual screenshot similarity smoke failed.' }
           Get-Content "$env:ATLAS_DATA_DIR/similarity-smoke.json"
       - name: Test real BigTIFF tile addressing beyond one TiB in the executable
@@ -157,16 +157,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
-          RELEASE_TAG: atlas-v0.4.0-offline.${{ github.run_number }}
+          RELEASE_TAG: atlas-v0.5.0-offline.${{ github.run_number }}
         shell: bash
         run: |
           cat > release-notes.md <<'NOTES'
-          Fully offline Windows x64 preview. Extract the entire ZIP and open AtlasScout.exe. Python and Node.js installation is not required. Both pinned AI models are included; first launch also works without Internet.
+          Fully offline Windows x64 preview. Extract the entire ZIP into a new folder and open AtlasScout.exe. Python and Node.js installation is not required. Three pinned AI models (DINOv2 detail features, CLIP image and multilingual text) are included; first launch also works without Internet.
 
-          New default workflow: select a reference rectangle or upload/paste a screenshot, set the target size, and find similar visual patterns across the entire scene or an optional region. Pattern matching supports scale variation and rotations in 45-degree steps, with optional local AI reranking. Searches checkpoint each tile and resume after cancellation/restart. All accepted detections are stored; cards are paged and viewport overlays are fetched separately. CSV streams every result. Detection accuracy is not guaranteed and screenshot/map scale matters.
+          Screenshot search now generates DINOv2 dense feature proposals independently of pixel-template matches, compares 3x3 spatial layout, and reranks exact crops with local DINOv2 and CLIP. Gradient matching also handles colour/exposure changes. Scale variation and 45-degree rotations remain available. CPU deep search takes longer. The default acceptance score is 55%; increasing it hides weaker matches without rescanning completed tiles.
+
+          Results are ranked and graded: high similarity (85%+), similar (70–85%), and review (below 70%). Map boxes and cards show percentage scores and matching colours. Level filters update both map and paged results; selected crops can be compared beside the reference with component scores. CSV includes all accepted results, percentages, grades and component scores. Annotated PNG uses the same colours and percentage labels. Scores are heuristic similarity indices, not calibrated detection probabilities. Independent satellite detection accuracy has not been measured.
 
           The former ECW directory RAM gate is replaced by lazy raw/v3 directory access and bounded streaming decompression of v1/v2 compressed directories to an atomic reusable disk cache. The included MIT ecw2tiff fork retains upstream source/license/provenance; no proprietary ECW SDK is included. The first open of a compressed directory can require additional disk space and time. It does not copy the imagery. Synthetic large-directory ECWs exceed the old admission gate and test decoding and cache reuse; real ECW v2/v3 imagery is tested separately. A physical 1 TiB imagery dataset has not been benchmarked.
 
-          Native executable checks passed for image formats, large ECW indexes, a sparse BigTIFF with real tile data beyond 1 TiB, screenshot matching using actual offline embeddings, native desktop/channel startup and the existing real-AI training/search/feedback workflow. Images and processing stay on this computer. Original pixel coordinates are retained; geographic coordinate export is not supported. Annotated PNG is a bounded overview. Retain linked originals at their selected path. Full model files are included; source builds require Rust, running this ZIP does not.
+          Native executable checks passed for image formats, large ECW indexes, a sparse BigTIFF with real tile data beyond 1 TiB, screenshot matching using actual offline models (including independently rendered changed-colour/texture/geometry targets, ranking, grades and feature-only proposals), native desktop/channel startup and the existing real-AI training/search/feedback workflow. These controlled functional fixtures are not a satellite accuracy benchmark. Searches checkpoint each tile and resume; all accepted results are stored. Images and processing stay on this computer. Original pixel coordinates are retained; geographic coordinate export is not supported. Annotated PNG is a bounded overview. Retain linked originals at their selected path. Existing reference and training data are preserved. Previous version candidate caches are invalidated automatically. DINOv2 model attribution and its Apache 2.0 license are included.
           NOTES
-          gh release create "$RELEASE_TAG" package/AtlasScout-Offline-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.4.0 Offline — Screenshot similarity and disk-backed ECW' --notes-file release-notes.md
+          gh release create "$RELEASE_TAG" package/AtlasScout-Offline-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.5.0 Offline — Deep visual search and ranked similarity levels' --notes-file release-notes.md

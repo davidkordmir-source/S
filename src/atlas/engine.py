@@ -9,7 +9,15 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from .config import IMAGE_MODEL, IMAGE_REVISION, MODEL_CACHE, TEXT_MODEL, TEXT_REVISION
+from .config import (
+    DETAIL_MODEL,
+    DETAIL_REVISION,
+    IMAGE_MODEL,
+    IMAGE_REVISION,
+    MODEL_CACHE,
+    TEXT_MODEL,
+    TEXT_REVISION,
+)
 from .errors import UserError
 
 
@@ -36,12 +44,15 @@ class Engine:
         for kind, model, revision in (
             ("image", IMAGE_MODEL, IMAGE_REVISION),
             ("text", TEXT_MODEL, TEXT_REVISION),
+            ("detail", DETAIL_MODEL, DETAIL_REVISION),
         ):
             local = bundle / kind
             cached = self.cache / ("models--" + model.replace("/", "--")) / "snapshots" / revision
-            self.paths[kind] = local if (local / "modules.json").is_file() else cached
+            marker = "config.json" if kind == "detail" else "modules.json"
+            self.paths[kind] = local if (local / marker).is_file() else cached
         self._image: Any = None
         self._text: Any = None
+        self._detail: Any = None
         self._lock = threading.Lock()
 
     def status(self) -> dict:
@@ -54,10 +65,12 @@ class Engine:
             "offline": True,
             "image_available": (self.paths["image"] / "modules.json").is_file(),
             "text_available": (self.paths["text"] / "modules.json").is_file(),
+            "detail_available": (self.paths["detail"] / "config.json").is_file(),
+            "detail_loaded": self._detail is not None,
         }
 
     def _load(self, kind: str) -> Any:
-        model = self._image if kind == "image" else self._text
+        model = getattr(self, "_" + kind)
         if model is not None:
             return model
         try:
@@ -68,24 +81,51 @@ class Engine:
         except ImportError as exc:
             raise UserError("بسته‌های هوش مصنوعی نصب نیستند. راهنمای نصب ویندوز را اجرا کنید.") from exc
         directory = self.paths[kind]
-        if not (directory / "modules.json").is_file():
+        if not (directory / ("config.json" if kind == "detail" else "modules.json")).is_file():
             raise UserError("فایل‌های مدل آفلاین در بسته موجود نیستند. پوشهٔ کامل نسخهٔ آفلاین را استخراج کنید.")
         try:
-            model = SentenceTransformer(
-                str(directory),
-                device="cpu",
-                trust_remote_code=False,
-                local_files_only=True,
-            )
+            if kind == "detail":
+                from transformers import Dinov2Model
+
+                model = Dinov2Model.from_pretrained(
+                    str(directory), local_files_only=True, use_safetensors=True, attn_implementation="sdpa"
+                ).eval()
+            else:
+                model = SentenceTransformer(
+                    str(directory), device="cpu", trust_remote_code=False, local_files_only=True
+                )
         except Exception as exc:
             raise UserError(
                 "مدل آفلاین خوانده نشد. کامل‌بودن پوشه‌های برنامه و گزارش خطا را بررسی کنید."
             ) from exc
-        if kind == "image":
-            self._image = model
-        else:
-            self._text = model
+        setattr(self, "_" + kind, model)
         return model
+
+    def details(self, pictures: list[Image.Image]) -> list[dict]:
+        """Local DINOv2 patch descriptors. Inputs use multiples of 14, at most 448 px.
+
+        Unlike global CLIP reranking these dense features propose locations even
+        when their pixels do not correlate with the reference screenshot.
+        """
+        import torch
+        import torch.nn.functional as functional
+
+        with self._lock, torch.inference_mode():
+            model = self._load("detail")
+            result = []
+            for picture in pictures:
+                width, height = picture.size
+                if max(width, height) > 448 or min(width, height) < 14 or width % 14 or height % 14:
+                    raise UserError("اندازهٔ ورودی مقایسهٔ ویژگی‌ها معتبر نیست.")
+                pixels = (
+                    torch.from_numpy(np.asarray(picture.convert("RGB")).copy()).permute(2, 0, 1).float() / 255
+                )
+                mean = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
+                std = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
+                values = model(pixel_values=((pixels - mean) / std)[None]).last_hidden_state[0]
+                values = functional.normalize(values, dim=-1).cpu().numpy()
+                result.append(dict(cls=values[0], grid=values[1:].reshape(height // 14, width // 14, -1)))
+            return result
 
     def prepare(self) -> None:
         with self._lock:

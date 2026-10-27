@@ -11,13 +11,16 @@ import re
 import shutil
 from pathlib import Path
 
-from atlas.config import IMAGE_MODEL, IMAGE_REVISION, TEXT_MODEL, TEXT_REVISION
+from atlas.config import DETAIL_MODEL, DETAIL_REVISION, IMAGE_MODEL, IMAGE_REVISION, TEXT_MODEL, TEXT_REVISION
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", default=".model-cache")
     parser.add_argument("--output", default=".model-bundle")
+    parser.add_argument(
+        "--detail-only", action="store_true", help="Add the detail model to an existing bundle"
+    )
     args = parser.parse_args()
     cache, output = Path(args.cache).resolve(), Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -25,20 +28,35 @@ def main():
     os.environ["HF_XET_CACHE"] = str(cache / "xet")
     os.environ.pop("HF_HUB_OFFLINE", None)
     os.environ.pop("TRANSFORMERS_OFFLINE", None)
-    from huggingface_hub import get_hf_file_metadata, hf_hub_url
+    from huggingface_hub import get_hf_file_metadata, hf_hub_url, snapshot_download
     from sentence_transformers import SentenceTransformer
 
     manifest = {"format": "atlas-model-bundle-v1", "models": {}}
-    for kind, repository, revision in [
+    if args.detail_only:
+        manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    models = [
         ("image", IMAGE_MODEL, IMAGE_REVISION),
         ("text", TEXT_MODEL, TEXT_REVISION),
-    ]:
+        ("detail", DETAIL_MODEL, DETAIL_REVISION),
+    ]
+    for kind, repository, revision in models:
+        if args.detail_only and kind != "detail":
+            continue
         print(f"Preparing pinned {kind} model: {repository} @ {revision}", flush=True)
-        model = SentenceTransformer(
-            repository, revision=revision, cache_folder=str(cache), device="cpu", trust_remote_code=False
-        )
+        model = None
+        if kind == "detail":
+            snapshot_download(
+                repository,
+                revision=revision,
+                cache_dir=str(cache),
+                allow_patterns=["config.json", "preprocessor_config.json", "model.safetensors", "README.md"],
+            )
+        else:
+            model = SentenceTransformer(
+                repository, revision=revision, cache_folder=str(cache), device="cpu", trust_remote_code=False
+            )
         snapshot = cache / ("models--" + repository.replace("/", "--")) / "snapshots" / revision
-        if not (snapshot / "modules.json").is_file():
+        if not (snapshot / ("config.json" if kind == "detail" else "modules.json")).is_file():
             raise RuntimeError("Pinned snapshot did not resolve to the expected location")
         hashes = {}
         destination = output / kind

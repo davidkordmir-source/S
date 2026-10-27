@@ -65,21 +65,43 @@ def main():
             )
             expect(page.locator(".reference-preview img")).to_be_visible()
             expect(page.get_by_role("spinbutton", name="عرض نمونه روی تصویر")).to_have_value("64")
+            slider = page.get_by_role("slider", name="حداقل شباهت", exact=True)
+            slider.focus()
+            slider.press("Home")
+            for _ in range(38):
+                slider.press("ArrowUp")
+            expect(slider).to_have_value("0.78")
             expect(page.get_by_role("button", name="پیداکردن موارد مشابه", exact=True)).to_be_enabled(
                 timeout=10000
             )
             page.get_by_role("button", name="پیداکردن موارد مشابه", exact=True).click()
             expect(page.locator(".result-card")).to_have_count(len(truth), timeout=60000)
             expect(page.locator(".detection-box")).to_have_count(len(truth), timeout=10000)
+            expect(page.locator(".map-level-legend")).to_be_visible()
+            assert "٪" in page.locator(".detection-box text").first.text_content()
+            assert "٪ شباهت" in page.locator(".result-photo b").first.text_content()
+            expect(page.locator(".level-filters button[aria-pressed=true]")).to_have_count(1)
+            page.locator(".level-filters .level-review").click()
+            expect(page.locator(".level-filters .level-review")).to_have_attribute("aria-pressed", "true")
+            expect(page.locator(".result-card")).to_have_count(0)
+            expect(page.locator(".detection-box")).to_have_count(0)
+            page.locator(".level-filters button").first.click()
+            expect(page.locator(".result-card")).to_have_count(len(truth))
             assert (
                 page.get_by_role("combobox", name="هدف آموزشی").count() == 0
             )  # no concept or negative examples
             page.locator(".result-photo").last.click()
             expect(page.locator(".detection-box.selected")).to_have_count(1)
+            expect(page.get_by_role("img", name="نمونهٔ اصلی برای مقایسه")).to_be_visible()
+            expect(page.get_by_role("img", name="نتیجهٔ انتخاب‌شده برای مقایسه")).to_be_visible()
+            expect(page.locator(".evidence-bars")).to_be_visible()
+            page.wait_for_timeout(400)
+            page.screenshot(path="/tmp/atlas-050-ranked-results.png", full_page=True)
             with page.expect_download() as downloaded:
                 page.get_by_role("button", name="CSV", exact=True).click()
             csv = Path(downloaded.value.path()).read_text(encoding="utf-8-sig")
             assert len(csv.strip().splitlines()) == len(truth) + 1
+            assert "similarity_percent,level" in csv
             page.get_by_role("button", name="نمایش کل تصویر", exact=True).click()
             page.get_by_role("button", name="انتخاب نمونه از روی تصویر", exact=True).click()
             bounds = page.locator(".scene-full").bounding_box()
@@ -102,7 +124,7 @@ def main():
                 assert not page.evaluate("document.documentElement.scrollWidth>innerWidth")
             page.wait_for_timeout(400)
             expect(page.locator(".similar-footer")).to_be_in_viewport()
-            page.screenshot(path="/tmp/atlas-040-similarity-ui.png", full_page=True)
+            page.screenshot(path="/tmp/atlas-050-similarity-ui.png", full_page=True)
             assert not errors, errors
             assert not external, external
             browser.close()

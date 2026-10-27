@@ -265,11 +265,15 @@ class Workshop:
         for item in self.iter_detections(run):
             b = item["bbox"]
             x, y = b["x"] * sx, b["y"] * sy
+            similar = run.get("settings", {}).get("method") == "similar"
+            colors = {"high": "#258369", "medium": "#2b78b4", "review": "#b58425"}
+            color = colors[item["level"]] if similar else "#89ed97"
             draw.rectangle(
-                (x, y, (b["x"] + b["width"]) * sx, (b["y"] + b["height"]) * sy), outline="#89ed97", width=2
+                (x, y, (b["x"] + b["width"]) * sx, (b["y"] + b["height"]) * sy), outline=color, width=2
             )
+            label = str(item["index"] + 1) + (f" | {item['similarity_percent']:.1f}%" if similar else "")
             draw.text(
-                (x + 3, y + 3), str(item["index"] + 1), fill="white", stroke_fill="#193825", stroke_width=1
+                (x + 3, y + 3), label, fill="white", stroke_fill="#193825", stroke_width=1
             )
         metadata = PngImagePlugin.PngInfo()
         metadata.add_text("atlas_original_size", json.dumps([info["width"], info["height"]]))
@@ -624,7 +628,7 @@ class Workshop:
             "message": f"جست‌وجو تمام شد؛ {len(results)} کادر پیشنهادی پیدا شد.",
         }
 
-    def run(self, id: str, offset: int = 0, limit: int = 200) -> dict:
+    def run(self, id: str, offset: int = 0, limit: int = 200, level: str = "all") -> dict:
         with self.connect() as db:
             row = db.execute("SELECT * FROM runs WHERE id=?", (id,)).fetchone()
         if row is None:
@@ -633,7 +637,7 @@ class Workshop:
         result = {**dict(row), "run": id, "settings": settings, "detections": json.loads(row["results"])}
         if settings.get("method") == "similar":
             result.update(
-                self.similarity.results(id, offset, limit),
+                self.similarity.results(id, offset, limit, level=level, counts=settings.get("level_counts")),
                 total_results=settings["total_results"],
                 offset=offset,
                 limit=limit,

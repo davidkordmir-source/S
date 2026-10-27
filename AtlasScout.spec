@@ -1,5 +1,5 @@
 # Run on Windows: python -m PyInstaller --noconfirm AtlasScout.spec
-# Both pinned model snapshots are included. Runtime never downloads weights.
+# All three pinned model snapshots are included. Runtime never downloads weights.
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata, collect_dynamic_libs, collect_all, collect_delvewheel_libs_directory
 
@@ -7,8 +7,12 @@ root = Path(SPECPATH)
 datas = [(str(root / "ui/dist"), "ui")]
 for notice in ("LICENSE", "PROVENANCE.md", "ATLAS_CHANGES.md"):
     datas.append((str(root / "vendor/ecw2tiff" / notice), "third-party/ecw2tiff"))
+for notice in ("LICENSE", "NOTICE.md"):
+    datas.append((str(root / "vendor/dinov2" / notice), "third-party/dinov2"))
 if not (root / '.model-bundle/manifest.json').is_file():
     raise RuntimeError('Run scripts/bundle-models.py before packaging the offline application')
+if not (root / '.model-bundle/detail/model.safetensors').is_file():
+    raise RuntimeError('The pinned offline DINOv2 model is missing; rerun scripts/bundle-models.py')
 datas += [(str(root / '.model-bundle'), 'models')]
 if not (root / ".raster-bundle/native-validation.json").is_file():
     raise RuntimeError("Run scripts/bundle-raster.py and validate the raster tools before packaging")
@@ -31,6 +35,7 @@ hiddenimports = raster_imports + collect_submodules("sentence_transformers") + [
     "transformers.models.distilbert.modeling_distilbert",
     "transformers.models.distilbert.tokenization_distilbert",
     "transformers.models.bert.tokenization_bert",
+    "transformers.models.dinov2.modeling_dinov2",
     "transformers.models.auto.modeling_auto",
     "transformers.models.auto.tokenization_auto",
     "transformers.models.auto.processing_auto",

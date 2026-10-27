@@ -10,6 +10,50 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 
+def make_variant_scene():
+    """Independently rendered roof shapes, not rotated copies of the query."""
+
+    def roof(variant=0):
+        random = np.random.default_rng(450 + variant)
+        pixels = random.normal([83, 104, 68], 8, (96, 128, 3)).clip(0, 255).astype(np.uint8)
+        image = Image.fromarray(pixels)
+        draw = ImageDraw.Draw(image)
+        colors = [(186, 69, 43), (55, 84, 151), (152, 148, 120)]
+        color = colors[variant % 3]
+        shift = variant * 3
+        draw.polygon(
+            [(21, 21 + shift), (78, 17 + shift), (82, 49 + shift), (57, 51 + shift), (59, 77), (25, 79)],
+            fill=color,
+        )
+        draw.line(
+            (24, 25 + shift, 78, 21 + shift, 79, 47 + shift, 54, 48 + shift, 55, 74, 29, 76),
+            fill=tuple(min(255, c + 38) for c in color),
+            width=3,
+        )
+        draw.rectangle((94, 24 + shift, 116, 56 + shift), fill=(180 - variant * 20, 177, 155))
+        draw.line((0, 89, 127, 81), fill="#bcb69c", width=7)
+        if variant:
+            draw.ellipse((0, 0, 18 + shift, 25), fill="#426443")
+            draw.rectangle((43, 32 + shift, 55, 43 + shift), fill="#d3d2c6")
+        return image
+
+    sample = roof()
+    scene = Image.fromarray(
+        np.random.default_rng(50).normal([82, 103, 69], 12, (384, 768, 3)).clip(0, 255).astype(np.uint8)
+    )
+    truth = []
+    for variant, (x, y) in enumerate([(32, 32), (280, 40), (520, 230)]):
+        scene.paste(roof(variant), (x, y))
+        truth.append((x, y, x + 128, y + 96))
+    # Different geometry and texture as a distractor.
+    draw = ImageDraw.Draw(scene)
+    draw.ellipse((120, 230, 210, 320), fill="#b3b7a0")
+    draw.line((0, 185, 767, 185), fill="#c5c3b3", width=6)
+    output = io.BytesIO()
+    sample.save(output, "JPEG", quality=85)
+    return scene, output.getvalue(), truth
+
+
 def make_similarity_scene():
     random = np.random.default_rng(261027)
     sample = Image.fromarray(random.integers(25, 160, (48, 64, 3), dtype=np.uint8))
@@ -68,6 +112,48 @@ def validate_similarity(root: Path):
         assert len(boxes) <= 10, boxes
         repeated = workshop.similarity.search(Job("similar"), **options)
         assert repeated["total_results"] == result["total_results"]
+        # A second scene is independently rendered with changed roof colours,
+        # textures and geometry. This guards against only testing query copies.
+        variant_scene, variant_data, variant_truth = make_variant_scene()
+        variant_path = root / "similarity-variants.png"
+        variant_scene.save(variant_path)
+        variant_info = workshop.import_scene_file(variant_path, variant_path.name, Job("import"))["scene"]
+        variant_ref = workshop.similarity.add_file(variant_data, "variant-query.jpg")
+        variant_result = workshop.similarity.search(
+            Job("variants"),
+            scene=variant_info["id"],
+            reference=variant_ref["id"],
+            width=128,
+            height=96,
+            threshold=0.55,
+            intelligent=True,
+            rotate=True,
+        )
+        ranked = list(workshop.iter_detections(variant_result))
+        top_boxes = [box_tuple(d["bbox"], 768, 384) for d in ranked[:3]]
+        assert all(
+            any(intersection_over_union(b, target) > 0.5 for b in top_boxes) for target in variant_truth
+        ), ranked[:3]
+        assert ranked[0]["score"] > ranked[1]["score"] > ranked[2]["score"]
+        assert ranked[0]["level"] == "high" and all(d["level"] == "medium" for d in ranked[1:3])
+        from .visual_features import dense_proposals, descriptor, model_picture
+
+        with Image.open(io.BytesIO(variant_data)) as query:
+            features = [
+                descriptor(f)
+                for f in engine.details(
+                    [model_picture(query.rotate(a, expand=True)) for a in range(0, 360, 45)]
+                )
+            ]
+        proposals = [
+            b
+            for b, _ in dense_proposals(
+                variant_scene, engine, features, 128, 96, (0.8, 1, 1.25), True, lambda: None
+            )
+        ]
+        assert all(
+            any(intersection_over_union(b, target) > 0.5 for b in proposals) for target in variant_truth
+        )
         assert not attempts
         report = dict(
             status="passed",
@@ -82,6 +168,12 @@ def validate_similarity(root: Path):
             scale_variation=True,
             tile_boundary_match=True,
             cached_rescan=True,
+            dense_feature_model="facebook/dinov2-small",
+            independently_rendered_targets=len(variant_truth),
+            independently_rendered_targets_in_top3=len(variant_truth),
+            feature_proposals_without_pixel_gate=True,
+            ranked_variant_scores=[round(d["score"] * 100, 1) for d in ranked[:3]],
+            level_counts=variant_result["level_counts"],
             external_connections=len(attempts),
             note="Controlled matching fixture, not measured satellite detection accuracy",
         )

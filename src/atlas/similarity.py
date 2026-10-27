@@ -14,14 +14,28 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .config import INDEX_VERSION
+from .config import DETAIL_REVISION, INDEX_VERSION
 from .errors import UserError
 from .image_io import read_picture
+from .visual_features import (
+    appearance_scores,
+    compare,
+    dense_proposals,
+    descriptor,
+    model_picture,
+    peaks,
+    structural,
+)
 from .workshop import box_tuple, intersection_over_union, rect_dict
 
 CORE = 768
 PAGE = 200
 ANGLES = tuple(range(0, 360, 45))
+LEVELS = (("high", 0.85, "بسیار مشابه"), ("medium", 0.7, "مشابه"), ("review", 0, "نیازمند بررسی"))
+
+
+def similarity_level(score):
+    return next(name for name, minimum, _ in LEVELS if score >= minimum)
 
 
 class Similarity:
@@ -39,6 +53,11 @@ class Similarity:
                 CREATE TABLE IF NOT EXISTS similar_detections(key INTEGER PRIMARY KEY,run TEXT,idx INTEGER,x INTEGER,y INTEGER,w INTEGER,h INTEGER,score REAL,appearance REAL,semantic REAL,angle INTEGER,UNIQUE(run,idx));
                 CREATE VIRTUAL TABLE IF NOT EXISTS similar_bounds USING rtree(key,x0,x1,y0,y1);
             """)
+            for table in ("similar_candidates", "similar_detections"):
+                existing = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+                for column in ("detail", "structure"):
+                    if column not in existing:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
 
     def references(self):
         with self.workshop.connect() as db:
@@ -140,7 +159,7 @@ class Similarity:
             columns=columns,
             windows=columns * rows,
             feature=INDEX_VERSION,
-            algorithm="reference-v3",
+            algorithm="reference-v4-dense-dino:" + DETAIL_REVISION[:12],
         )
         scan = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         with self.workshop.connect() as db:
@@ -154,9 +173,9 @@ class Similarity:
             settings=settings,
         )
 
-    def search(self, job, threshold=0.8, **options):
-        if not math.isfinite(threshold) or not 0.5 <= threshold <= 0.99:
-            raise UserError("آستانهٔ شباهت باید بین ۰٫۵ و ۰٫۹۹ باشد.")
+    def search(self, job, threshold=0.55, **options):
+        if not math.isfinite(threshold) or not 0.4 <= threshold <= 0.99:
+            raise UserError("آستانهٔ شباهت باید بین ۰٫۴ و ۰٫۹۹ باشد.")
         plan = self.plan(**options)
         settings, scan = plan["settings"], plan["scan"]
         reference = self.reference(settings["reference"])
@@ -195,6 +214,7 @@ class Similarity:
         if not templates:
             raise UserError("محدوده از نمونه کوچک‌تر است؛ اندازهٔ هدف را کوچک‌تر یا محدوده را بزرگ‌تر کن.")
         reference_vectors = None
+        detail_references = None
         if settings["intelligent"]:
             job.update(1, "آماده‌سازی نمونهٔ تصویری برای مقایسهٔ هوشمند")
             reference_vectors = np.asarray(
@@ -203,6 +223,16 @@ class Similarity:
                 ),
                 dtype=np.float32,
             )
+            job.check()
+            detail_references = [
+                descriptor(features)
+                for features in self.workshop.engine.details(
+                    [
+                        model_picture(sample.rotate(a, resample=Image.Resampling.BICUBIC, expand=True))
+                        for a in (ANGLES if settings["rotate"] else (0,))
+                    ]
+                )
+            ]
         if reference_vectors is not None and (
             reference_vectors.ndim != 2
             or reference_vectors.shape[1] != 512
@@ -238,6 +268,7 @@ class Similarity:
                     (x0, y0, x1, y1), max(1, math.ceil(max(x1 - x0, y1 - y0) / factor)), exact=True
                 )
                 image = np.asarray(picture)
+                edges = structural(image)
                 # Account for the last partial tile's rounded output dimensions.
                 sx, sy = (x1 - x0) / picture.width, (y1 - y0) / picture.height
                 candidates = []
@@ -252,57 +283,112 @@ class Similarity:
                     if constant:
                         similarity = 1 - similarity
                     similarity = np.nan_to_num(similarity, nan=-1, posinf=-1, neginf=-1)
+                    template_edges = structural(template)
+                    edge_map = (
+                        cv2.matchTemplate(edges, template_edges, cv2.TM_CCOEFF_NORMED, mask=valid)
+                        if template_edges.std() > 1e-3
+                        else np.zeros(similarity.shape, np.float32)
+                    )
+                    edge_map = np.nan_to_num(edge_map, nan=-1, posinf=-1, neginf=-1)
+                    # Shape proposals also survive changed roof/soil colours.
+                    proposal = np.maximum(similarity, 0.95 * edge_map)
                     limit_x = min(similarity.shape[1], max(0, math.ceil(min(span, box[2] - x0) / sx)))
                     limit_y = min(similarity.shape[0], max(0, math.ceil(min(span, box[3] - y0) / sy)))
-                    similarity = similarity[:limit_y, :limit_x]
-                    if not similarity.size:
+                    proposal = proposal[:limit_y, :limit_x]
+                    if not proposal.size:
                         continue
-                    kernel = max(3, min(tw, th) // 2) | 1
-                    maxima = cv2.dilate(similarity, np.ones((kernel, kernel), np.uint8))
-                    ys, xs = np.nonzero((similarity >= 0.35) & (similarity >= maxima - 1e-7))
-                    # Equal-score plateaus become one peak per connected region.
-                    mask = np.zeros(similarity.shape, np.uint8)
-                    mask[ys, xs] = 1
-                    n, labels, stats, centers = cv2.connectedComponentsWithStats(mask, 8)
-                    for label in range(1, n):
-                        left, top, width, height = stats[label, :4]
-                        region = similarity[top : top + height, left : left + width]
-                        ly, lx = np.unravel_index(
-                            np.argmax(
-                                np.where(labels[top : top + height, left : left + width] == label, region, -2)
-                            ),
-                            region.shape,
-                        )
-                        px, py = left + lx, top + ly
+                    for px, py, confidence in peaks(proposal, 0.35, min(tw, th) / 2):
                         b = (
                             round(x0 + px * sx),
                             round(y0 + py * sy),
                             min(box[2], round(x0 + (px + tw) * sx)),
                             min(box[3], round(y0 + (py + th) * sy)),
                         )
-                        candidates.append((b, float(similarity[py, px]), angle))
+                        candidates.append(
+                            (b, confidence, angle, float(similarity[py, px]), float(edge_map[py, px]))
+                        )
                 candidates = local_suppress(candidates)
+                if detail_references is not None:
+                    feature_candidates = []
+                    job.update(
+                        2 + tile / plan["windows"] * 88,
+                        f"بررسی مستقل ویژگی‌های بصری: بخش {tile + 1:,} از {plan['windows']:,}",
+                    )
+                    for bounds, confidence in dense_proposals(
+                        picture,
+                        self.workshop.engine,
+                        detail_references,
+                        settings["width"] / sx,
+                        settings["height"] / sy,
+                        scales,
+                        settings["rotate"],
+                        job.check,
+                    ):
+                        px0, py0, px1, py1 = bounds
+                        if (
+                            px0 < 0
+                            or py0 < 0
+                            or px1 > picture.width
+                            or py1 > picture.height
+                            or px0 * sx >= span
+                            or py0 * sy >= span
+                        ):
+                            continue
+                        b = (
+                            round(x0 + px0 * sx),
+                            round(y0 + py0 * sy),
+                            round(x0 + px1 * sx),
+                            round(y0 + py1 * sy),
+                        )
+                        # Keep both independent proposal paths until crop reranking.
+                        # Exact RGB proposals win local ties; DINO is never gated by RGB.
+                        feature_candidates.append((b, min(0.94, confidence), 0, None, None))
+                    # Proposal scores from different models are not comparable.
+                    # Preserve both paths until the final, common crop score.
+                    candidates.extend(local_suppress(feature_candidates, overlap=0.7))
                 records = []
                 for start in range(0, len(candidates), 16):
                     job.check()
                     chunk = candidates[start : start + 16]
                     semantic = np.ones(len(chunk), np.float32)
+                    crops = [reader.read(item[0], 384, exact=True) for item in chunk]
+                    detail_scores = [None] * len(chunk)
                     if reference_vectors is not None:
                         vectors = np.asarray(
-                            self.workshop.engine.images(
-                                [reader.read(b, 384, exact=True) for b, _, _ in chunk]
-                            ),
+                            self.workshop.engine.images(crops),
                             np.float32,
                         )
                         if vectors.shape != (len(chunk), 512) or not np.isfinite(vectors).all():
                             raise UserError("مقایسهٔ هوشمند کامل نشد.")
                         semantic = np.clip((vectors @ reference_vectors.T).max(axis=1), 0, 1)
-                    for (b, appearance, angle), ai in zip(chunk, semantic, strict=True):
-                        score = (
-                            0.8 * max(0, appearance) + 0.2 * float(ai)
-                            if reference_vectors is not None
-                            else max(0, appearance)
-                        )
+                        detail_scores = [
+                            compare(descriptor(features), detail_references)[0]
+                            for features in self.workshop.engine.details(
+                                [model_picture(crop) for crop in crops]
+                            )
+                        ]
+                    for item, crop, ai, detail in zip(chunk, crops, semantic, detail_scores, strict=True):
+                        b, _, angle, appearance, edge = item
+                        if appearance is None:
+                            appearance, edge, angle = appearance_scores(
+                                crop, sample, ANGLES if settings["rotate"] else (0,)
+                            )
+                        appearance, edge = max(0.0, appearance), max(0.0, edge)
+                        visual = max(appearance, 0.95 * edge)
+                        score = visual
+                        if detail is not None:
+                            # Two independent evidence paths: exact/structural matching
+                            # and transferable local features. A weak pixel match cannot
+                            # veto a strong DINO match, but CLIP alone cannot accept it.
+                            # DINO/CLIP cosines have a substantial shared-image
+                            # baseline. Stretch [0.5,1] to [0,1] before fusion so
+                            # unrelated terrain does not receive 60–80% scores.
+                            learned = max(0.0, (detail - 0.5) * 2)
+                            semantic_evidence = max(0.0, (float(ai) - 0.5) * 2)
+                            score = max(
+                                0.85 * visual + 0.15 * semantic_evidence,
+                                0.85 * learned + 0.15 * semantic_evidence,
+                            )
                         records.append(
                             (
                                 scan,
@@ -313,21 +399,24 @@ class Similarity:
                                 b[3] - b[1],
                                 score,
                                 appearance,
-                                float(ai),
+                                max(0.0, (float(ai) - 0.5) * 2) if reference_vectors is not None else None,
                                 angle,
+                                max(0.0, (detail - 0.5) * 2) if detail is not None else None,
+                                edge,
                             )
                         )
                 job.check()
                 with self.workshop.connect() as db:
                     db.execute("DELETE FROM similar_candidates WHERE scan=? AND tile=?", (scan, tile))
                     db.executemany(
-                        "INSERT INTO similar_candidates(scan,tile,x,y,w,h,score,appearance,semantic,angle) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO similar_candidates(scan,tile,x,y,w,h,score,appearance,semantic,angle,detail,structure) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                         records,
                     )
                     db.execute("UPDATE similar_scans SET next_tile=? WHERE id=?", (tile + 1, scan))
         job.update(92, "مرتب‌سازی نتایج و حذف هم‌پوشانی؛ تمام نتایج پذیرفته‌شده ذخیره می‌شوند")
         run = uuid.uuid4().hex
         total = 0
+        level_counts = dict(high=0, medium=0, review=0)
         try:
             with self.workshop.connect() as read_db, self.workshop.connect() as db:
                 cursor = read_db.execute(
@@ -351,7 +440,7 @@ class Similarity:
                     ):
                         continue
                     result = db.execute(
-                        "INSERT INTO similar_detections(run,idx,x,y,w,h,score,appearance,semantic,angle) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO similar_detections(run,idx,x,y,w,h,score,appearance,semantic,angle,detail,structure) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             run,
                             total,
@@ -363,14 +452,19 @@ class Similarity:
                             row["appearance"],
                             row["semantic"],
                             row["angle"],
+                            row["detail"],
+                            row["structure"],
                         ),
                     )
                     db.execute(
                         "INSERT INTO similar_bounds VALUES(?,?,?,?,?)", (result.lastrowid, x, x + w, y, y + h)
                     )
                     total += 1
+                    level_counts[similarity_level(row["score"])] += 1
                 job.check()
-                settings.update(threshold=threshold, total_results=total, scan=scan)
+                settings.update(
+                    threshold=threshold, total_results=total, scan=scan, level_counts=level_counts
+                )
                 db.execute(
                     "INSERT INTO runs VALUES(?,?,?,?,?,?,?)",
                     (run, settings["scene"], None, None, json.dumps(settings), "[]", time.time()),
@@ -397,27 +491,56 @@ class Similarity:
             bbox=dict(x=row["x"], y=row["y"], width=row["w"], height=row["h"]),
             score=round(row["score"], 5),
             appearance=round(row["appearance"], 5),
-            semantic=round(row["semantic"], 5),
+            semantic=round(row["semantic"], 5) if row["semantic"] is not None else None,
             angle=row["angle"],
+            detail=round(row["detail"], 5) if row["detail"] is not None else None,
+            structure=round(row["structure"], 5) if row["structure"] is not None else None,
+            level=similarity_level(row["score"]),
+            similarity_percent=round(row["score"] * 100, 1),
         )
 
-    def results(self, run, offset=0, limit=PAGE, viewport=None):
+    def results(self, run, offset=0, limit=PAGE, viewport=None, level="all", counts=None):
+        ranges = {"all": (0.0, 2.0), "high": (0.85, 2.0), "medium": (0.7, 0.85), "review": (0.0, 0.7)}
+        if level not in ranges:
+            raise UserError("سطح شباهت معتبر نیست.")
+        minimum, maximum = ranges[level]
         with self.workshop.connect() as db:
             if viewport:
                 b = viewport
                 rows = db.execute(
-                    "SELECT d.* FROM similar_bounds b CROSS JOIN similar_detections d ON d.key=b.key WHERE d.run=? AND b.x1>=? AND b.x0<=? AND b.y1>=? AND b.y0<=? ORDER BY d.score DESC LIMIT ?",
-                    (run, b["x"], b["x"] + b["width"], b["y"], b["y"] + b["height"], limit + 1),
+                    "SELECT d.* FROM similar_bounds b CROSS JOIN similar_detections d ON d.key=b.key WHERE d.run=? AND d.score>=? AND d.score<? AND b.x1>=? AND b.x0<=? AND b.y1>=? AND b.y0<=? ORDER BY d.score DESC LIMIT ?",
+                    (
+                        run,
+                        minimum,
+                        maximum,
+                        b["x"],
+                        b["x"] + b["width"],
+                        b["y"],
+                        b["y"] + b["height"],
+                        limit + 1,
+                    ),
                 ).fetchall()
                 return {
                     "detections": [self.detection(r) for r in rows[:limit]],
                     "truncated": len(rows) > limit,
                 }
             rows = db.execute(
-                "SELECT * FROM similar_detections WHERE run=? ORDER BY idx LIMIT ? OFFSET ?",
-                (run, limit, offset),
+                "SELECT * FROM similar_detections WHERE run=? AND score>=? AND score<? ORDER BY idx LIMIT ? OFFSET ?",
+                (run, minimum, maximum, limit, offset),
             ).fetchall()
-        return {"detections": [self.detection(r) for r in rows]}
+            if counts is None:  # compatibility with runs saved before levels existed
+                counts = dict(high=0, medium=0, review=0)
+                for row in db.execute(
+                    "SELECT CASE WHEN score>=.85 THEN 'high' WHEN score>=.7 THEN 'medium' ELSE 'review' END AS level,COUNT(*) AS total FROM similar_detections WHERE run=? GROUP BY level",
+                    (run,),
+                ):
+                    counts[row["level"]] = row["total"]
+        return {
+            "detections": [self.detection(r) for r in rows],
+            "level": level,
+            "level_counts": counts,
+            "filtered_results": sum(counts.values()) if level == "all" else counts[level],
+        }
 
     def one(self, run, index):
         with self.workshop.connect() as db:
@@ -428,6 +551,20 @@ class Similarity:
             raise UserError("نتیجه پیدا نشد.")
         return self.detection(row)
 
+    def page_for(self, run, index, level, limit):
+        # Indices are global ranks; a filtered page has its own offset.
+        self.one(run, index)
+        allowed = {"all": (0.0, 2.0), "high": (0.85, 2.0), "medium": (0.7, 0.85), "review": (0.0, 0.7)}
+        if level not in allowed:
+            raise UserError("سطح شباهت معتبر نیست.")
+        low, high = allowed[level]
+        with self.workshop.connect() as db:
+            before = db.execute(
+                "SELECT COUNT(*) FROM similar_detections WHERE run=? AND idx<? AND score>=? AND score<?",
+                (run, index, low, high),
+            ).fetchone()[0]
+        return before // limit * limit
+
     def iterate(self, run):
         with self.workshop.connect() as db:
             cursor = db.execute("SELECT * FROM similar_detections WHERE run=? ORDER BY idx", (run,))
@@ -435,12 +572,13 @@ class Similarity:
                 yield self.detection(row)
 
 
-def local_suppress(candidates):
+def local_suppress(candidates, overlap=0.5):
     """Only suppress highly overlapping proposals, with a bounded spatial grid."""
     chosen = []
     grid = {}
     cell = 256
-    for box, score, angle in sorted(candidates, key=lambda item: item[1], reverse=True):
+    for candidate in sorted(candidates, key=lambda item: item[1], reverse=True):
+        box = candidate[0]
         x0, y0, x1, y1 = box
         keys = [
             (x, y)
@@ -448,10 +586,10 @@ def local_suppress(candidates):
             for x in range(x0 // cell, (x1 - 1) // cell + 1)
         ]
         neighbours = {i for key in keys for i in grid.get(key, [])}
-        if any(intersection_over_union(box, chosen[i][0]) > 0.5 for i in neighbours):
+        if any(intersection_over_union(box, chosen[i][0]) > overlap for i in neighbours):
             continue
         i = len(chosen)
-        chosen.append((box, score, angle))
+        chosen.append(candidate)
         for key in keys:
             grid.setdefault(key, []).append(i)
     return chosen

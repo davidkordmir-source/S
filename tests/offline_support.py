@@ -27,7 +27,12 @@ class OfflineTestEngine:
 
     def status(self):
         return dict(
-            image_available=True, text_available=True, image_loaded=True, text_loaded=True, offline=True
+            image_available=True,
+            text_available=True,
+            image_loaded=True,
+            text_loaded=True,
+            offline=True,
+            detail_available=True,
         )
 
     def images(self, pictures):
@@ -41,3 +46,11 @@ class OfflineTestEngine:
         vector = np.zeros(512, dtype=np.float32)
         vector[0 if "قرمز" in query or "red" in query else 2] = 1
         return vector
+
+    def details(self, pictures):
+        # Wiring double only. Real DINO retrieval is checked with pinned weights
+        # by the packaged --similarity-smoke-test, never by this stand-in.
+        return [
+            dict(cls=np.zeros(8, np.float32), grid=np.zeros((p.height // 14, p.width // 14, 8), np.float32))
+            for p in pictures
+        ]
