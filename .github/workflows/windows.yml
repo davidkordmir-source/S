@@ -182,7 +182,7 @@ jobs:
               '```' >> $env:GITHUB_STEP_SUMMARY
             }
           }
-          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-neural-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-neural-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-neural-smoke/assistant-runtime.log", "$env:RUNNER_TEMP/atlas-precision-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-precision-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ecw-index-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
+          foreach ($LogPath in @("dist/installer-error.log", "$env:RUNNER_TEMP/atlas-neural-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-neural-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-neural-smoke/assistant-runtime.log", "$env:RUNNER_TEMP/atlas-precision-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-precision-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ecw-index-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
             if (Test-Path $LogPath) {
               if ('${{ job.status }}' -eq 'failure') {
                 $TailText = (Get-Content $LogPath -Tail 35) -join '%0A'
@@ -200,6 +200,7 @@ jobs:
           name: windows-build-diagnostics
           path: |
             build.log
+            dist/installer-error.log
             raster-build.log
             model-build.log
             enhanced-build.log

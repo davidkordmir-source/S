@@ -28,6 +28,7 @@ if __name__ == "__main__":
                     "--ecw-index-smoke-test",
                     "--similarity-smoke-test",
                     "--precision-smoke-test",
+                    "--neural-smoke-test",
                 )
             )
             and os.name == "nt"

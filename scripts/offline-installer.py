@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import traceback
 import zipfile
 from pathlib import Path
 
@@ -222,4 +223,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        report = (
+            Path(sys.executable).parent / "installer-error.log"
+            if getattr(sys, "frozen", False)
+            else Path("installer-error.log")
+        )
+        report.write_text(traceback.format_exc(), encoding="utf-8")
+        if "--verify-package" in sys.argv:
+            raise SystemExit(1) from None
+        raise
