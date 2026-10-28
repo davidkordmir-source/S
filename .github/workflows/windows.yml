@@ -128,7 +128,7 @@ jobs:
             if (Test-Path $BuildLog) {
               if ('${{ job.status }}' -eq 'failure') {
                 $TailText = (Get-Content $BuildLog -Tail 45) -join '%0A'
-                Write-Host "::error title=$BuildLog::$TailText"
+                Write-Host "::error title=${BuildLog}::$TailText"
               }
               "### $BuildLog" >> $env:GITHUB_STEP_SUMMARY
               '```text' >> $env:GITHUB_STEP_SUMMARY
