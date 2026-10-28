@@ -268,7 +268,18 @@ class ReferenceMatcher:
 
     def score(self, chunk, crops, scan, tile):
         engine = self.similarity.workshop.engine
-        gray_crops = [shape_picture(crop) for crop in crops]
+        valid = []
+        for item, picture in zip(chunk, crops, strict=True):
+            crop = shape_picture(picture)
+            low, high = crop.getextrema()[0]
+            # Normalized template correlation is undefined for a constant
+            # candidate. OpenCV can report a spurious high edge score on some
+            # CPU paths. Such a crop contains no shape/texture evidence at all.
+            if low != high:
+                valid.append((item, crop))
+        if not valid:
+            return []
+        chunk, gray_crops = map(list, zip(*valid, strict=True))
         clip = engine.images(gray_crops) if self.bank else None
         details = (
             [descriptor(f) for f in engine.details([model_picture(p) for p in gray_crops])]

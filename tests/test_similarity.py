@@ -310,3 +310,25 @@ def test_corrupt_reference_feature_cache_is_rebuilt(tmp_path):
     before = workshop.engine.calls
     ReferenceMatcher(workshop.similarity, settings, Job("recover"))
     assert workshop.engine.calls - before == 8
+
+
+def test_uniform_candidate_cannot_inherit_spurious_normalized_edge_score(tmp_path):
+    workshop, scene, reference, _ = setup_scene(tmp_path)
+    settings = workshop.similarity.plan(
+        scene["id"],
+        reference["id"],
+        width=64,
+        height=48,
+        intelligent=False,
+        geometry=False,
+    )["settings"]
+    matcher = ReferenceMatcher(workshop.similarity, settings, Job("match"))
+    # A normalized OpenCV response may be arbitrarily high at zero variance.
+    # Reproduce that proposal independently of the host's OpenCV/CPU math.
+    chunk = [((10, 20, 74, 68), 0.99, 0, 0, 0.0, 0.99)]
+    assert matcher.score(chunk, [Image.new("RGB", (64, 48), "#647b60")], "scan", 0) == []
+    with Image.open(workshop.similarity.folder / f"{reference['id']}.png") as source:
+        textured = source.convert("RGB")
+    normal = ((90, 20, 154, 68), 0.99, 0, 0, 0.9, 0.9)
+    records = matcher.score(chunk + [normal], [Image.new("RGB", (64, 48), "red"), textured], "scan", 0)
+    assert len(records) == 1 and records[0][2:4] == (90, 20)

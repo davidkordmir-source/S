@@ -36,6 +36,14 @@ jobs:
             .assistant-cache
           key: atlas-offline-inputs-${{ hashFiles('src/atlas/config.py', 'scripts/bundle-models.py', 'scripts/bundle-enhanced-models.py', 'scripts/bundle-neural-search.py', 'scripts/bundle-assistant-runtime.py', 'requirements-lock.txt') }}
           restore-keys: atlas-offline-inputs-
+      - name: Restore the pinned compiled runtime independently of large model caches
+        id: runtime-cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: .assistant-cache
+          key: atlas-native-runtime-${{ runner.os }}-${{ hashFiles('scripts/bundle-assistant-runtime.py') }}
+          restore-keys: atlas-native-runtime-${{ runner.os }}-
       - name: Prepare the pinned Rust toolchain for the vendored MIT decoder
         shell: pwsh
         run: rustup toolchain install 1.99.1 --profile minimal
@@ -219,6 +227,13 @@ jobs:
             ${{ runner.temp }}/atlas-smoke/*.log
             ${{ runner.temp }}/atlas-smoke/desktop-smoke.json
             ${{ runner.temp }}/atlas-ai-smoke/*.log
+      - name: Save the runnable pinned native runtime
+        if: ${{ always() && !cancelled() && steps.runtime-cache.outputs.cache-hit != 'true' && hashFiles('.assistant-bundle/manifest.json') != '' }}
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: .assistant-cache
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
       - name: Save verified offline build inputs
         if: ${{ always() && !cancelled() && steps.offline-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4

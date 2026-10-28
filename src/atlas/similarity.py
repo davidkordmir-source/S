@@ -265,7 +265,7 @@ class Similarity:
             columns=columns,
             windows=columns * rows,
             feature=INDEX_VERSION,
-            algorithm="reference-v6-precision:" + DETAIL_REVISION[:12],
+            algorithm="reference-v7-nonconstant:" + DETAIL_REVISION[:12],
         )
         scan = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         with self.workshop.connect() as db:
