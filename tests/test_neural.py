@@ -215,3 +215,16 @@ def test_old_library_schema_migrates_without_losing_targets_or_images(tmp_path):
     restored.similarity.library.archive(group)
     restored.similarity.library.archive(group, False)
     assert (restored.similarity.folder / f"{reference['id']}.png").is_file()
+
+
+def test_image_only_neural_search_does_not_invent_or_generate_a_language_plan(tmp_path):
+    engine = NeuralDouble()
+    workshop = Workshop(tmp_path, engine)
+    scene = workshop.import_scene(scene_bytes(), "scene.png", Job("import"))["scene"]["id"]
+    ref = workshop.similarity.add_file(scene_bytes(), "reference.png")
+    result = workshop.similarity.search(
+        Job("search"), match_mode="instances", scene=scene, reference=ref["id"], quality="fast"
+    )
+    assert result["detections"] and result["settings"]["native_image_guidance"]
+    assert engine.assistant.calls == 0
+    assert "assistant" not in result and "assistant" not in result["settings"]

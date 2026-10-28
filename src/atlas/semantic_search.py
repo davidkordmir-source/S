@@ -112,7 +112,7 @@ class SemanticSearch:
             scene_fingerprint=self.similar.feature_store.fingerprint(scene),
             detector_revision=self.engine.objects.revision(),
             assistant_revision=self.engine.assistant.revision(),
-            algorithm="native-owl-instance-v1",
+            algorithm="native-owl-instance-v2",
             colour_evidence=False,
         )
         scan = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
@@ -174,27 +174,42 @@ class SemanticSearch:
             settings["reused_scan"] = True
             return self.similar.finish(job, settings, scan, threshold)
         references = settings["references"]
-        if "assistant" not in settings:
-            pictures = [self._image(r["id"]) for r in references[:4]]
-            if not pictures:
-                # Bind text-only/chat plans to the same actual scene overview.
-                # The original large image is still read in bounded detector tiles.
-                with Image.open(self.workshop.images / f"{settings['scene']}-preview.jpg") as preview:
-                    pictures.append(preview.convert("RGB"))
-            message = settings["instruction"]
-            if settings["excluded_description"]:
-                message += "\nموارد نامطلوب: " + settings["excluded_description"]
-            understood = self.engine.assistant.understand(
-                job, message, pictures, search=True, prepared=settings.get("prepared")
-            )
-            if understood["intent"] == "clarify" or not references and not understood["detector_phrases"]:
-                raise UserError(understood["answer_fa"])
-            settings["assistant"] = understood
-            settings["colour_evidence"] = understood["use_colour"]
-            # The language model is not run on every scene tile. Free its RAM
-            # before the detector starts; a repeated instruction reuses its plan.
+        if "guidance" not in settings:
+            if (
+                references
+                and not settings["instruction"]
+                and not settings["excluded_description"]
+                and not settings.get("prepared")
+            ):
+                # Image-only retrieval is already native neural inference. It
+                # needs no generated class name and makes no language-model call.
+                settings["native_image_guidance"] = True
+                settings["guidance"] = dict(
+                    detector_phrases=[],
+                    excluded_phrases=[],
+                    use_colour=False,
+                    reference_regions=[],
+                )
+            else:
+                pictures = [self._image(r["id"]) for r in references[:4]]
+                if not pictures:
+                    # Bind text-only/chat plans to the same actual scene overview.
+                    # The original large image is still read in bounded detector tiles.
+                    with Image.open(self.workshop.images / f"{settings['scene']}-preview.jpg") as preview:
+                        pictures.append(preview.convert("RGB"))
+                message = settings["instruction"]
+                if settings["excluded_description"]:
+                    message += "\nموارد نامطلوب: " + settings["excluded_description"]
+                understood = self.engine.assistant.understand(
+                    job, message, pictures, search=True, prepared=settings.get("prepared")
+                )
+                if understood["intent"] == "clarify" or not references and not understood["detector_phrases"]:
+                    raise UserError(understood["answer_fa"])
+                settings["assistant"] = understood
+                settings["guidance"] = understood
+                settings["colour_evidence"] = understood["use_colour"]
         self.engine.assistant.close()
-        understood = settings["assistant"]
+        understood = settings["guidance"]
         colour = understood["use_colour"]
         resolution = {"fast": 512, "balanced": 768, "detailed": 960}[settings["quality"]]
         images, image_ids = [], []
@@ -348,8 +363,10 @@ class SemanticSearch:
             hits=store.object_hits - start_hits, misses=store.object_misses - start_misses
         )
         result = self.similar.finish(job, settings, scan, threshold)
-        result["assistant"] = understood
+        if "assistant" in settings:
+            result["assistant"] = settings["assistant"]
         result["message"] = (
-            f"{result['total_results']:,} نتیجهٔ هم‌نوع با مدل تشخیص ذخیره شد. " + understood["answer_fa"]
+            f"{result['total_results']:,} نتیجهٔ هم‌نوع با مدل تشخیص ذخیره شد. "
+            + understood.get("answer_fa", "")
         )
         return result

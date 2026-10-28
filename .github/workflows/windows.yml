@@ -164,6 +164,12 @@ jobs:
             $TailText = (Get-Content build.log -Tail 35) -join '%0A'
             Write-Host "::error title=Windows build diagnostics::$TailText"
           }
+          $NeuralReport = "$env:RUNNER_TEMP/atlas-neural-smoke/neural-smoke.json"
+          if (Test-Path $NeuralReport) {
+            $NeuralText = Get-Content $NeuralReport -Raw
+            $Escaped = $NeuralText.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::notice title=Actual neural execution::$Escaped"
+          }
           $DesktopReport = "$env:RUNNER_TEMP/atlas-smoke/desktop-smoke.json"
           if (Test-Path $DesktopReport) {
             $DesktopText = Get-Content $DesktopReport -Raw

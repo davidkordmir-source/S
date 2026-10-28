@@ -89,6 +89,15 @@ def validate_neural(root: Path):
             repeated = workshop.similarity.search(Job("similar"), **options, threshold=0.13)
             assert engine.objects.vision_calls == vision_calls and repeated["settings"]["reused_scan"]
             assert engine.assistant.calls == 1
+            image_only = workshop.similarity.search(
+                Job("image-guided"), match_mode="instances", scene=imported["id"], group=group, quality="fast"
+            )
+            image_boxes = [box_tuple(d["bbox"], width, height) for d in image_only["detections"]]
+            assert all(
+                any(intersection_over_union(target, box) > 0.3 for box in image_boxes) for target in truth
+            ), image_only
+            assert image_only["settings"]["native_image_guidance"] and "assistant" not in image_only
+            assert engine.assistant.calls == 1 and engine.objects.vision_calls == vision_calls
             assert not attempts, attempts
             report = dict(
                 status="passed",
@@ -99,6 +108,9 @@ def validate_neural(root: Path):
                 full_pipeline_detections=len(detected),
                 pipeline_default_threshold=result["settings"]["threshold"],
                 pipeline_threshold_reuses_scan=True,
+                image_only_neural_search=True,
+                image_only_language_calls=0,
+                image_only_scene_features_reused=True,
                 seconds=time.monotonic() - started,
                 external_network_attempts=attempts,
                 detector_revision=engine.objects.revision(),
