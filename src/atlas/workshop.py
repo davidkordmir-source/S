@@ -76,6 +76,9 @@ class Workshop:
                   id TEXT PRIMARY KEY,scene TEXT,concept TEXT,revision INTEGER,
                   settings TEXT,results TEXT,created REAL);
             """)
+            concept_columns = {row["name"] for row in db.execute("PRAGMA table_info(concepts)")}
+            if "archived" not in concept_columns:
+                db.execute("ALTER TABLE concepts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
             columns = {row["name"] for row in db.execute("PRAGMA table_info(scenes)")}
             for name, kind in [
                 ("source_path", "TEXT"),
@@ -283,7 +286,7 @@ class Workshop:
         with self.connect() as db:
             rows = db.execute("""SELECT c.*,sum(CASE WHEN e.label=1 THEN 1 ELSE 0 END) positive,
                 sum(CASE WHEN e.label=0 THEN 1 ELSE 0 END) negative
-                FROM concepts c LEFT JOIN examples e ON e.concept=c.id
+                FROM concepts c LEFT JOIN examples e ON e.concept=c.id WHERE c.archived=0
                 GROUP BY c.id ORDER BY c.created DESC""").fetchall()
         result = []
         for row in rows:
@@ -322,6 +325,21 @@ class Workshop:
         with self.connect() as db:
             db.execute("INSERT INTO concepts(id,name,created) VALUES(?,?,?)", (identifier, name, time.time()))
         return self.concept(identifier)
+
+    def rename_concept(self, id: str, name: str) -> dict:
+        self.concept(id)
+        name = name.strip()
+        if not 1 <= len(name) <= 100:
+            raise UserError("نام هدف باید بین ۱ تا ۱۰۰ نویسه باشد.")
+        with self.connect() as db:
+            db.execute("UPDATE concepts SET name=? WHERE id=?", (name, id))
+        return self.concept(id)
+
+    def archive_concept(self, id: str, archived=True) -> dict:
+        self.concept(id)
+        with self.connect() as db:
+            db.execute("UPDATE concepts SET archived=? WHERE id=?", (int(archived), id))
+        return dict(id=id, deleted=archived, restored=not archived)
 
     def examples(self, concept: str) -> list[dict]:
         self.concept(concept)
@@ -423,6 +441,8 @@ class Workshop:
 
     def train(self, concept: str, job: Job) -> dict:
         current = self.concept(concept)
+        if current["archived"]:
+            raise UserError("هدف آموزشی حذف شده است؛ ابتدا آن را بازگردان.")
         with self.connect() as db:
             examples = [
                 dict(row)
@@ -543,6 +563,8 @@ class Workshop:
         model, revision = None, None
         if concept:
             current = self.concept(concept)
+            if current["archived"]:
+                raise UserError("هدف آموزشی حذف شده است؛ یک هدف فعال را انتخاب کن.")
             if not current["model"] or current["trained_revision"] != current["revision"]:
                 raise UserError("نمونه‌ها جدید شده‌اند. ابتدا آموزش را به‌روزرسانی کن.")
             model = json.loads(current["model"])

@@ -61,6 +61,11 @@ class Engine:
         self.paths["segment"] = bundle / "segment"
         self.compute = Compute(root, bundle / "detail-onnx/model.onnx")
         self._lock = threading.Lock()
+        from .object_detector import ObjectDetector
+        from .offline_assistant import OfflineAssistant
+
+        self.objects = ObjectDetector(self, bundle / "detector")
+        self.assistant = OfflineAssistant(root, self, bundle / "assistant-model")
 
     def status(self) -> dict:
         return {
@@ -77,6 +82,8 @@ class Engine:
             "detail_loaded": self._detail is not None,
             "aerial_available": (self.paths["aerial"] / "model.safetensors").is_file(),
             "segmentation_available": (self.paths["segment"] / "model.safetensors").is_file(),
+            "object_detector": self.objects.status(),
+            "assistant": self.assistant.status(),
         }
 
     def _load(self, kind: str) -> Any:
@@ -275,7 +282,13 @@ class Engine:
             for name in ("image", "text", "detail", "aerial", "segment"):
                 setattr(self, "_" + name, None)
             self._segment_embeddings = None
+            self.objects.close()
+            self.assistant.close()
             return result
+
+    def close(self):
+        self.assistant.close()
+        self.objects.close()
 
     def prepare(self) -> None:
         with self._lock:

@@ -14,6 +14,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Actual input image format validation failed be
 if ($LASTEXITCODE -ne 0) { throw 'Preparing verified offline model files failed.' }
 & '.venv/Scripts/python.exe' scripts/bundle-enhanced-models.py 2>&1 | Tee-Object -FilePath enhanced-build.log
 if ($LASTEXITCODE -ne 0) { throw 'Preparing aerial, segmentation and accelerated model files failed.' }
+& '.venv/Scripts/python.exe' scripts/bundle-assistant-runtime.py 2>&1 | Tee-Object -FilePath assistant-build.log
+if ($LASTEXITCODE -ne 0) { throw 'Building the local multimodal runtime failed.' }
+& '.venv/Scripts/python.exe' scripts/bundle-neural-search.py 2>&1 | Tee-Object -FilePath neural-build.log
+if ($LASTEXITCODE -ne 0) { throw 'Preparing real local vision-language and object detector weights failed.' }
 & '.venv/Scripts/python.exe' -m pytest -q --junitxml=pytest-results.xml 2>&1 | Tee-Object -FilePath pytest.log
 if ($LASTEXITCODE -ne 0) {
     if (Test-Path 'pytest-results.xml') {
@@ -28,5 +32,6 @@ if ($LASTEXITCODE -ne 0) {
 & '.venv/Scripts/python.exe' -m PyInstaller --noconfirm --clean AtlasScout.spec
 if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
 if (-not (Test-Path 'dist/AtlasScout/AtlasScout.exe')) { throw 'Expected executable was not produced.' }
-Compress-Archive -Path 'dist/AtlasScout' -DestinationPath 'dist/AtlasScout-Offline-Windows-x64.zip' -Force
-Write-Host 'Created dist/AtlasScout-Offline-Windows-x64.zip. The models are included; keep the entire folder.' -ForegroundColor Green
+& '.venv/Scripts/python.exe' scripts/package-windows.py
+if ($LASTEXITCODE -ne 0) { throw 'Creating the offline multipart installer failed.' }
+Write-Host 'Created offline Windows installer and verified archive parts.' -ForegroundColor Green

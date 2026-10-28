@@ -47,6 +47,7 @@ def main() -> None:
         action="store_true",
         help="Validate aerial learning, masks, pose, indexing and accelerated graph offline",
     )
+    parser.add_argument("--neural-smoke-test", action="store_true", help="Validate actual local vision-language and object detector models")
     args = parser.parse_args()
     root = data_directory()
     root.mkdir(parents=True, exist_ok=True)
@@ -57,6 +58,11 @@ def main() -> None:
         ],
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if args.neural_smoke_test:
+        from .neural_validation import validate_neural
+
+        validate_neural(root)
+        return
     if args.ecw_index_smoke_test:
         from .ecw_validation import validate_ecw_directories
 

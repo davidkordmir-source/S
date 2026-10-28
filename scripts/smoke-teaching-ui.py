@@ -53,6 +53,7 @@ def main():
                 ),
             )
             page.goto("http://127.0.0.1:8766/?token=ui-test-only-session")
+            page.get_by_role("button", name="تطابق دقیق", exact=True).click()
             page.locator('input[type=file]:not([multiple])[accept^=".png"]').set_input_files(
                 {"name": "scene.png", "mimeType": "image/png", "buffer": data.getvalue()}
             )

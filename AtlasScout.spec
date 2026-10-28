@@ -1,5 +1,5 @@
 # Run on Windows: python -m PyInstaller --noconfirm AtlasScout.spec
-# Five pinned models and the accelerated DINO graph are included. Runtime is offline.
+# Seven models, the DINO graph and local multimodal runtime are included. Runtime is offline.
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata, collect_dynamic_libs, collect_all, collect_delvewheel_libs_directory
 
@@ -21,6 +21,12 @@ if not (root / '.model-bundle/manifest.json').is_file():
     raise RuntimeError('Run scripts/bundle-models.py before packaging the offline application')
 if not (root / '.model-bundle/detail/model.safetensors').is_file():
     raise RuntimeError('The pinned offline DINOv2 model is missing; rerun scripts/bundle-models.py')
+for kind in ('detector', 'assistant-model'):
+    if not (root / '.model-bundle' / kind / 'atlas-source.json').is_file():
+        raise RuntimeError('Run scripts/bundle-neural-search.py: ' + kind)
+if not (root / '.assistant-bundle/llama-server.exe').is_file():
+    raise RuntimeError('Run scripts/bundle-assistant-runtime.py before packaging')
+datas += [(str(root / '.assistant-bundle'), 'assistant')]
 datas += [(str(root / '.model-bundle'), 'models')]
 if not (root / ".raster-bundle/native-validation.json").is_file():
     raise RuntimeError("Run scripts/bundle-raster.py and validate the raster tools before packaging")
@@ -39,6 +45,9 @@ for distribution in ("sentence-transformers", "transformers", "torch", "scikit-l
 
 hiddenimports = raster_imports + collect_submodules("sentence_transformers") + [
     "pillow_heif", "_pillow_heif", "ecw2tiff", "ecw2tiff.ecw2tiff",
+    "transformers.models.owlv2.modeling_owlv2",
+    "transformers.models.owlv2.processing_owlv2",
+    "transformers.models.owlv2.image_processing_pil_owlv2",
     "transformers.models.clip.modeling_clip",
     "transformers.models.clip.processing_clip",
     "transformers.models.clip.image_processing_clip",

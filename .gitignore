@@ -19,3 +19,9 @@ test-results/
 
 vendor/ecw2tiff/target/
 pytest-results.xml
+.assistant-cache/
+.assistant-bundle/
+
+AI-MODELS.json
+.neural-validation/
+AtlasScout-Setup.spec

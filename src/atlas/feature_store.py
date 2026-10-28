@@ -7,6 +7,7 @@ import json
 import math
 import shutil
 import time
+import uuid
 import zipfile
 
 import numpy as np
@@ -25,6 +26,8 @@ class FeatureStore:
         self.folder.mkdir(exist_ok=True)
         self.hits = 0
         self.misses = 0
+        self.object_hits = 0
+        self.object_misses = 0
         with workshop.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS scene_feature_cache(key TEXT PRIMARY KEY,path TEXT,bytes INTEGER,used REAL);
@@ -98,6 +101,54 @@ class FeatureStore:
                 total -= row["bytes"]
                 if total <= budget:
                     break
+
+    def object_features(self, key, picture, detector, resolution=768, colour=False):
+        key = (
+            "object-"
+            + hashlib.sha256(f"{key}:{detector.revision()}:{resolution}:{colour}:v1".encode()).hexdigest()
+        )
+        path = self.folder / (key + ".npz")
+        if path.is_file():
+            try:
+                with np.load(path, allow_pickle=False) as saved:
+                    arrays = {
+                        k: saved[k].astype(np.float32)
+                        for k in ("classes", "boxes", "shift", "scale", "objectness")
+                    }
+                n = arrays["classes"].shape[0]
+                if (
+                    not 1 <= n <= 4096
+                    or arrays["classes"].shape != (n, 512)
+                    or arrays["boxes"].shape != (n, 4)
+                    or any(arrays[k].shape != (n,) for k in ("shift", "scale", "objectness"))
+                    or any(not np.isfinite(a).all() for a in arrays.values())
+                ):
+                    raise ValueError("Invalid object feature cache")
+                arrays["classes"] = unit(arrays["classes"])
+                self.object_hits += 1
+                with self.workshop.connect() as db:
+                    db.execute("UPDATE scene_feature_cache SET used=? WHERE key=?", (time.time(), key))
+                return arrays
+            except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+                path.unlink(missing_ok=True)
+        self.object_misses += 1
+        arrays = detector.scene(picture, resolution, colour)
+        if shutil.disk_usage(self.folder).free < 256 * 1024**2:
+            raise UserError("فضای دیسک برای ذخیرهٔ ویژگی‌های مدل تشخیص کافی نیست.")
+        temporary = self.folder / f"{key}-{uuid.uuid4().hex}.tmp"
+        try:
+            with temporary.open("xb") as stream:
+                np.savez_compressed(stream, **{k: v.astype(np.float16) for k, v in arrays.items()})
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        with self.workshop.connect() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO scene_feature_cache VALUES(?,?,?,?)",
+                (key, path.name, path.stat().st_size, time.time()),
+            )
+        self.trim()
+        return arrays
 
     def index_plan(self, scene, block=512):
         if block not in (256, 512, 1024):

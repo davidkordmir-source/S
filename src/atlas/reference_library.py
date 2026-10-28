@@ -18,6 +18,14 @@ class ReferenceLibrary:
                 CREATE TABLE IF NOT EXISTS reference_members(target TEXT REFERENCES reference_groups(id) ON DELETE CASCADE,reference TEXT REFERENCES image_references(id),enabled INTEGER NOT NULL DEFAULT 1,position INTEGER,digest TEXT,PRIMARY KEY(target,reference));
                 CREATE TABLE IF NOT EXISTS similarity_meta(key TEXT PRIMARY KEY,value TEXT);
             """)
+            group_columns = {r[1] for r in db.execute("PRAGMA table_info(reference_groups)")}
+            for column, kind in [
+                ("description", "TEXT NOT NULL DEFAULT ''"),
+                ("excluded_description", "TEXT NOT NULL DEFAULT ''"),
+                ("archived", "INTEGER NOT NULL DEFAULT 0"),
+            ]:
+                if column not in group_columns:
+                    db.execute(f"ALTER TABLE reference_groups ADD COLUMN {column} {kind}")
             columns = {r[1] for r in db.execute("PRAGMA table_info(reference_members)")}
             for column, kind in [
                 ("label", "INTEGER NOT NULL DEFAULT 1"),
@@ -30,7 +38,8 @@ class ReferenceLibrary:
                 for row in db.execute("SELECT id,name,created FROM image_references").fetchall():
                     target = "legacy-" + row["id"]
                     db.execute(
-                        "INSERT INTO reference_groups VALUES(?,?,?)", (target, row["name"], row["created"])
+                        "INSERT INTO reference_groups(id,name,updated) VALUES(?,?,?)",
+                        (target, row["name"], row["created"]),
                     )
                     db.execute(
                         "INSERT INTO reference_members(target,reference,enabled,position,digest) VALUES(?,?,1,0,NULL)",
@@ -46,17 +55,24 @@ class ReferenceLibrary:
             return [
                 dict(r)
                 for r in db.execute(
-                    "SELECT g.*,COUNT(m.reference) AS total,COALESCE(SUM(CASE WHEN m.label=1 AND m.partition='train' THEN m.enabled ELSE 0 END),0) AS enabled FROM reference_groups g LEFT JOIN reference_members m ON m.target=g.id GROUP BY g.id ORDER BY g.updated DESC,g.id"
+                    "SELECT g.*,COUNT(m.reference) AS total,COALESCE(SUM(CASE WHEN m.label=1 AND m.partition='train' THEN m.enabled ELSE 0 END),0) AS enabled FROM reference_groups g LEFT JOIN reference_members m ON m.target=g.id WHERE g.archived=0 GROUP BY g.id ORDER BY g.updated DESC,g.id"
                 )
             ]
 
     def active(self):
         with self.connect() as db:
             row = db.execute("SELECT value FROM similarity_meta WHERE key='active-group'").fetchone()
-        return row["value"] if row else None
+        if not row:
+            return None
+        with self.connect() as db:
+            active = db.execute(
+                "SELECT id FROM reference_groups WHERE id=? AND archived=0", (row["value"],)
+            ).fetchone()
+        return active["id"] if active else None
 
     def select(self, id):
-        self.group(id)
+        if self.group(id)["archived"]:
+            raise UserError("این هدف حذف شده است؛ ابتدا آن را بازگردان.")
         with self.connect() as db:
             db.execute(
                 "INSERT INTO similarity_meta VALUES('active-group',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -86,7 +102,7 @@ class ReferenceLibrary:
             raise UserError("نام هدف را بنویس.")
         id = uuid.uuid4().hex
         with self.connect() as db:
-            db.execute("INSERT INTO reference_groups VALUES(?,?,?)", (id, name, time.time()))
+            db.execute("INSERT INTO reference_groups(id,name,updated) VALUES(?,?,?)", (id, name, time.time()))
         self.select(id)
         return self.group(id)
 
@@ -99,10 +115,40 @@ class ReferenceLibrary:
             db.execute("UPDATE reference_groups SET name=?,updated=? WHERE id=?", (name, time.time(), id))
         return self.group(id)
 
+    def describe(self, id, description=None, excluded_description=None):
+        self.group(id)
+        for value in (description, excluded_description):
+            if value is not None and len(value) > 8000:
+                raise UserError("توضیح هدف بیش از ظرفیت ورودی است؛ آن را کوتاه‌تر کن.")
+        with self.connect() as db:
+            if description is not None:
+                db.execute(
+                    "UPDATE reference_groups SET description=?,updated=? WHERE id=?",
+                    (description.strip(), time.time(), id),
+                )
+            if excluded_description is not None:
+                db.execute(
+                    "UPDATE reference_groups SET excluded_description=?,updated=? WHERE id=?",
+                    (excluded_description.strip(), time.time(), id),
+                )
+        return self.group(id)
+
+    def archive(self, id, archived=True):
+        self.group(id)
+        with self.connect() as db:
+            db.execute(
+                "UPDATE reference_groups SET archived=?,updated=? WHERE id=?",
+                (int(archived), time.time(), id),
+            )
+            if archived:
+                db.execute("DELETE FROM similarity_meta WHERE key='active-group' AND value=?", (id,))
+        return dict(id=id, deleted=archived, restored=not archived)
+
     def add(self, id, reference, label=1, partition="train"):
         if label not in (0, 1) or partition not in ("train", "test"):
             raise UserError("نوع نمونه معتبر نیست.")
-        self.group(id)
+        if self.group(id)["archived"]:
+            raise UserError("این هدف حذف شده است؛ یک هدف فعال را انتخاب کن.")
         self.similarity.reference(reference)
         digest = hashlib.sha256((self.similarity.folder / f"{reference}.png").read_bytes()).hexdigest()
         with self.connect() as db:

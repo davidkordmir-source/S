@@ -53,7 +53,7 @@ def main():
                 ),
             )
             page.goto("http://127.0.0.1:8766/?token=ui-test-only-session")
-            page.get_by_role("tab", name="آموزش پیشرفته", exact=True).click()
+            page.get_by_role("tab", name="دسته‌بند نمونه‌ای", exact=True).click()
             expect(page.get_by_role("heading", level=1)).to_contain_text("یاد بده")
             expect(page.get_by_role("button", name="جست‌وجو روی تصویر", exact=True)).to_be_disabled()
             page.locator('input[type=file]:not([multiple])[accept^=".png"]').set_input_files(

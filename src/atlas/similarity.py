@@ -159,9 +159,20 @@ class Similarity:
         mode="complete",
         index_block=512,
         fast_regions=1000,
+        match_mode="exact",
         **ignored,
     ):
+        if match_mode == "instances":
+            from .semantic_search import SemanticSearch
+
+            return SemanticSearch(self).plan(
+                scene=scene, reference=reference, group=group, scope=scope, mode=mode, **ignored
+            )
+        if match_mode != "exact":
+            raise UserError("نوع تطابق معتبر نیست.")
         info = self.workshop.scene(scene)
+        if group and self.library.group(group)["archived"]:
+            raise UserError("هدف حذف شده است؛ یک هدف فعال را انتخاب کن.")
         self.workshop.scene_path(scene)
         references = (
             [
@@ -268,7 +279,14 @@ class Similarity:
             settings=settings,
         )
 
-    def search(self, job, threshold=0.55, **options):
+    def search(self, job, threshold=None, **options):
+        if options.get("match_mode") == "instances":
+            from .semantic_search import SemanticSearch
+
+            return SemanticSearch(self).search(
+                job, threshold=0.12 if threshold is None else threshold, **options
+            )
+        threshold = 0.55 if threshold is None else threshold
         if not math.isfinite(threshold) or not 0.4 <= threshold <= 0.99:
             raise UserError("آستانهٔ شباهت باید بین ۰٫۴ و ۰٫۹۹ باشد.")
         group = options.get("group")
@@ -377,6 +395,9 @@ class Similarity:
                         records,
                     )
                     db.execute("UPDATE similar_scans SET next_tile=? WHERE id=?", (tile + 1, scan))
+        return self.finish(job, settings, scan, threshold)
+
+    def finish(self, job, settings, scan, threshold):
         job.update(92, "مرتب‌سازی نتایج و حذف هم‌پوشانی؛ تمام نتایج پذیرفته‌شده ذخیره می‌شوند")
         run = uuid.uuid4().hex
         total = 0
@@ -474,7 +495,7 @@ class Similarity:
             index=row["idx"],
             bbox=dict(x=row["x"], y=row["y"], width=row["w"], height=row["h"]),
             score=round(row["score"], 5),
-            appearance=round(row["appearance"], 5),
+            appearance=round(row["appearance"], 5) if row["appearance"] is not None else None,
             semantic=round(row["semantic"], 5) if row["semantic"] is not None else None,
             angle=row["angle"],
             matched_reference=row["matched_reference"],

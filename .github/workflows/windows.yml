@@ -13,7 +13,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,7 +33,8 @@ jobs:
           path: |
             .model-cache
             .raster-cache
-          key: atlas-offline-inputs-${{ hashFiles('src/atlas/config.py', 'scripts/bundle-models.py', 'scripts/bundle-enhanced-models.py', 'requirements-lock.txt') }}
+            .assistant-cache
+          key: atlas-offline-inputs-${{ hashFiles('src/atlas/config.py', 'scripts/bundle-models.py', 'scripts/bundle-enhanced-models.py', 'scripts/bundle-neural-search.py', 'scripts/bundle-assistant-runtime.py', 'requirements-lock.txt') }}
           restore-keys: atlas-offline-inputs-
       - name: Prepare the pinned Rust toolchain for the vendored MIT decoder
         shell: pwsh
@@ -43,6 +44,17 @@ jobs:
         run: |
           Start-Transcript -Path build.log
           try { ./scripts/build-windows.ps1 } finally { Stop-Transcript }
+      - name: Test real offline vision-language AI and nonidentical object instances
+        shell: pwsh
+        env:
+          ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-neural-smoke
+          ATLAS_NEURAL_FIXTURE: ${{ runner.temp }}/coco-two-cats.jpg
+        run: |
+          Invoke-WebRequest 'https://images.cocodataset.org/val2017/000000039769.jpg' -OutFile $env:ATLAS_NEURAL_FIXTURE
+          $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--neural-smoke-test' -PassThru
+          if (-not $ApplicationProcess.WaitForExit(1200000)) { $ApplicationProcess.Kill(); throw 'Real multimodal inference check timed out.' }
+          if ($ApplicationProcess.ExitCode -ne 0) { throw 'Real multimodal inference or nonidentical instance detection failed.' }
+          Get-Content "$env:ATLAS_DATA_DIR/neural-smoke.json"
       - name: Test actual image decoders and ECW v2/v3 in the executable
         shell: pwsh
         env:
@@ -105,17 +117,19 @@ jobs:
           if (-not $ApplicationProcess.WaitForExit(900000)) { $ApplicationProcess.Kill(); throw 'AI smoke timed out.' }
           if ($ApplicationProcess.ExitCode -ne 0) { throw 'Packaged real AI smoke failed.' }
           Get-Content "$env:ATLAS_DATA_DIR/ai-smoke.json"
-      - name: Check package and write checksum
+      - name: Verify bounded package assets
         shell: pwsh
         run: |
-          if ((Get-Item 'dist/AtlasScout-Offline-Windows-x64.zip').Length -ge 2GB) { throw 'Package exceeds the GitHub release asset limit.' }
-          $PackageHash = (Get-FileHash 'dist/AtlasScout-Offline-Windows-x64.zip' -Algorithm SHA256).Hash.ToLower()
-          "$PackageHash  AtlasScout-Offline-Windows-x64.zip" | Set-Content 'dist/SHA256SUMS.txt'
+          Get-ChildItem dist/AtlasScout-Windows.part* | ForEach-Object { if ($_.Length -ge 2GB) { throw 'Archive part exceeds GitHub asset limit.' } }
+          if (-not (Test-Path dist/AtlasScout-Setup.exe)) { throw 'Offline installer is missing.' }
       - uses: actions/upload-artifact@v4
         with:
           name: AtlasScout-Offline-Windows-x64
           path: |
-            dist/AtlasScout-Offline-Windows-x64.zip
+            dist/AtlasScout-Setup.exe
+            dist/AtlasScout-Windows.part*
+            dist/AtlasScout-Package.json
+            dist/AI-MODELS.json
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
@@ -144,7 +158,7 @@ jobs:
             Get-Content build.log -Tail 120 >> $env:GITHUB_STEP_SUMMARY
             '```' >> $env:GITHUB_STEP_SUMMARY
           }
-          foreach ($BuildLog in @('raster-build.log', 'model-build.log', 'enhanced-build.log')) {
+          foreach ($BuildLog in @('raster-build.log', 'model-build.log', 'enhanced-build.log', 'assistant-build.log', 'neural-build.log')) {
             if (Test-Path $BuildLog) {
               if ('${{ job.status }}' -eq 'failure') {
                 $TailText = (Get-Content $BuildLog -Tail 45) -join '%0A'
@@ -156,7 +170,7 @@ jobs:
               '```' >> $env:GITHUB_STEP_SUMMARY
             }
           }
-          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-precision-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-precision-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ecw-index-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
+          foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-neural-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-neural-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-neural-smoke/assistant-runtime.log", "$env:RUNNER_TEMP/atlas-precision-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-precision-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ecw-index-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
             if (Test-Path $LogPath) {
               if ('${{ job.status }}' -eq 'failure') {
                 $TailText = (Get-Content $LogPath -Tail 35) -join '%0A'
@@ -177,6 +191,9 @@ jobs:
             raster-build.log
             model-build.log
             enhanced-build.log
+            assistant-build.log
+            neural-build.log
+            ${{ runner.temp }}/atlas-neural-smoke/*.log
             pytest.log
             pytest-results.xml
             ${{ runner.temp }}/atlas-formats-smoke/*.log
@@ -195,6 +212,7 @@ jobs:
           path: |
             .model-cache
             .raster-cache
+            .assistant-cache
           key: ${{ steps.offline-cache.outputs.cache-primary-key }}
   publish:
     needs: windows
@@ -212,20 +230,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
-          RELEASE_TAG: atlas-v0.7.0-offline.${{ github.run_number }}
+          RELEASE_TAG: atlas-v0.8.0-offline.${{ github.run_number }}
         shell: bash
         run: |
           cat > release-notes.md <<'NOTES'
-          Fully offline Windows x64 preview. Extract the entire ZIP into a new folder and open AtlasScout.exe. No Python or Node.js installation is needed. Five pinned models and a DINOv2 ONNX graph are included. Keep the whole extracted folder and retain linked imagery at its original path.
+          Offline Windows x64 preview with a real local Qwen2-VL vision-language assistant and native OWLv2 image/text-guided instance detection. Free Persian/English instructions, one or more optional reference images, editable descriptions, deletable/restorable training targets and editable/deletable chat messages. The new instance search does not require template correlation or matching pixel layout. The previous exact matching mode remains available.
 
-          New precision tools: correct/wrong result feedback, positive/negative reference examples, optional local Logistic Regression adaptation over fixed DINOv2 and aerial RemoteCLIP features, separate training/test examples and evaluation without overlapping known scene crops or sibling augmentations. One positive photo still starts a search; a negative example is needed only for the optional dedicated classifier. The foundation networks are not fine-tuned. Precision/recall/F1 are reported only with both test classes; these user-example metrics are not a satellite benchmark or calibrated probabilities. Grayscale matching continues to exclude colour-palette evidence.
+          Download AtlasScout-Setup.exe and ALL AtlasScout-Windows.part files into the same folder. Run the setup EXE and choose a new destination folder. Setup verifies each part and the full ZIP64 checksum before extraction. No internet, Python or Node.js is required on the destination machine. Keep the whole installed folder. Existing training data is stored separately and preserved.
 
-          Target isolation accepts foreground/background clicks, a box with offline SAM2.1 Hiera Tiny, or a manual polygon. Review the proposed mask before applying; original references remain available. SIFT/RANSAC provides continuous rotation, scale and projective verification with inlier counts and polygon overlays. Verification is optional because low-detail targets may lack enough keypoints; strict mode excludes unverified candidates.
+          Seven neural models, the existing DINO ONNX graph and a pinned MIT llama.cpp local runtime are included with licenses and source metadata. The language model runs on CPU and is unloaded before scene detection. OWLv2 runs on CPU in this portable build; existing DINO DirectML and WebGL rendering are retained. Query-independent scene embedding caching accelerates repeated searches; no numerical GPU or speed claim is made without a hardware benchmark. More scales inspect every selected tile, at additional processing cost.
 
-          Persistent disk-bounded dense-feature caching and a resumable scene index support repeated searches. Complete search checks every selected tile. Fast search retrieves a bounded set of indexed regions and explicitly reports approximate coverage, which can miss targets. CSV exports include evidence, geometry, target-model scores and search coverage. Search checkpoints and existing training data are preserved.
-
-          A viewport-sized WebGL renderer draws only visible image tiles, with a bounded texture cache and fallback after context loss. Hardware settings offer auto/CPU/GPU and maximum/balanced performance. The portable Windows build includes DirectML for DINOv2 on compatible AMD/Intel/NVIDIA drivers; remaining models use CPU. Source installations with CUDA-enabled PyTorch can use CUDA. Auto mode falls back to CPU when a GPU fails. The active provider is reported only after execution, and DirectML node use is checked on the first inference. No specific GPU speedup is claimed without a hardware benchmark.
-
-          Native Windows executable checks exercise actual bundled aerial/segmentation models, adaptation, held-out evaluation, feedback, index persistence, geometry, ONNX CPU parity, existing similarity search, raster formats, ECW v2/v3, a sparse BigTIFF with real tiles beyond one TiB, desktop startup and legacy learning with outbound Python sockets blocked. Controlled functional fixtures do not measure real-world satellite detection accuracy, a physical one-terabyte dataset, or GPU throughput. Image coordinates remain in original pixels; geographic export is not supported. Open-source model/codec license notices are included; no proprietary ECW SDK is bundled.
+          Native checks run the real VLM and detect two nonidentical objects in the official COCO example, in addition to previous actual-model, desktop, raster, ECW and sparse BigTIFF checks. This functional fixture does not establish satellite detection accuracy. Arbitrary requests are accepted by the language model; visible evidence, image resolution and detector capabilities still limit results. Model scores are not calibrated probabilities. Original pixel coordinates are exported; geographic export is not supported. No proprietary ECW SDK is included.
           NOTES
-          gh release create "$RELEASE_TAG" package/AtlasScout-Offline-Windows-x64.zip package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.7.0 Offline — Precision teaching and local hardware rendering' --notes-file release-notes.md
+          gh release create "$RELEASE_TAG" package/AtlasScout-Setup.exe package/AtlasScout-Windows.part* package/AtlasScout-Package.json package/AI-MODELS.json package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.8.0 Offline — Local vision-language AI and instance detection' --notes-file release-notes.md

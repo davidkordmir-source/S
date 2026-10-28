@@ -53,7 +53,8 @@ def main():
                 ),
             )
             page.goto("http://127.0.0.1:8766/?token=ui-test-only-session")
-            expect(page.get_by_role("tab", name="مشابه این تصویر", exact=True)).to_have_attribute(
+            page.get_by_role("button", name="تطابق دقیق", exact=True).click()
+            expect(page.get_by_role("tab", name="هوش مصنوعی · عکس و متن", exact=True)).to_have_attribute(
                 "aria-selected", "true"
             )
             page.locator('input[type=file]:not([multiple])[accept^=".png"]').set_input_files(

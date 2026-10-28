@@ -40,6 +40,12 @@ class ConceptName(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
+class TargetUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=8000)
+    excluded_description: str | None = Field(default=None, max_length=8000)
+
+
 class Annotation(BaseModel):
     concept: str
     scene: str
@@ -114,7 +120,7 @@ class SimilarSettings(BaseModel):
     group: str | None = None
     width: int = Field(default=128, ge=8, le=8192)
     height: int = Field(default=128, ge=8, le=8192)
-    threshold: float = Field(default=0.55, ge=0.4, le=0.99, allow_inf_nan=False)
+    threshold: float | None = Field(default=None, ge=0.01, le=0.99, allow_inf_nan=False)
     scope: Rect | None = None
     broad: bool = False
     rotate: bool = True
@@ -127,6 +133,23 @@ class SimilarSettings(BaseModel):
     mode: Literal["complete", "fast"] = "complete"
     index_block: Literal[256, 512, 1024] = 512
     fast_regions: int = Field(default=1000, ge=10, le=100000)
+    match_mode: Literal["exact", "instances"] = "exact"
+    instruction: str | None = Field(default=None, max_length=8000)
+    excluded_description: str | None = Field(default=None, max_length=8000)
+    prepared: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    quality: Literal["fast", "balanced", "detailed"] = "balanced"
+
+
+class AssistantMessage(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+    group: str | None = None
+    scene: str | None = None
+    run: str | None = None
+    detection: int | None = Field(default=None, ge=0)
+
+
+class MessageEdit(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
 
 
 class Feedback(BaseModel):
@@ -140,6 +163,10 @@ class OfflineServices:
         self.engine = engine or Engine(root)
         self.workshop = Workshop(root, self.engine)
         self.jobs = Jobs()
+        with self.workshop.connect() as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS assistant_messages(id TEXT PRIMARY KEY,target TEXT,role TEXT,content TEXT,model TEXT,created REAL)"
+            )
 
     def idle(self):
         with self.jobs.lock:
@@ -150,6 +177,8 @@ class OfflineServices:
 
     def close(self):
         self.jobs.close()
+        if hasattr(self.engine, "close"):
+            self.engine.close()
 
 
 async def upload(request: Request, maximum: int) -> bytes:
@@ -321,9 +350,22 @@ def create_app(
         return services.workshop.similarity.library.group(id)
 
     @app.patch("/api/workspace/reference-groups/{id}")
-    def rename_reference_group(id: str, body: ConceptName):
+    def rename_reference_group(id: str, body: TargetUpdate):
         services.idle()
-        return services.workshop.similarity.library.rename(id, body.name)
+        library = services.workshop.similarity.library
+        if body.name is not None:
+            library.rename(id, body.name)
+        return library.describe(id, body.description, body.excluded_description)
+
+    @app.delete("/api/workspace/reference-groups/{id}")
+    def delete_reference_group(id: str):
+        services.idle()
+        return services.workshop.similarity.library.archive(id)
+
+    @app.post("/api/workspace/reference-groups/{id}/restore")
+    def restore_reference_group(id: str):
+        services.idle()
+        return services.workshop.similarity.library.archive(id, False)
 
     @app.post("/api/workspace/reference-groups/{id}/members")
     def attach_reference(id: str, body: ReferenceMember):
@@ -361,10 +403,115 @@ def create_app(
             "similar", lambda job: services.workshop.similarity.search(job, **options)
         )
 
+    @app.get("/api/workspace/assistant/messages")
+    def assistant_messages(group: str | None = None):
+        if group:
+            services.workshop.similarity.library.group(group)
+        with services.workshop.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM assistant_messages WHERE target IS ? ORDER BY created DESC LIMIT 60", (group,)
+            ).fetchall()
+        return dict(messages=[dict(r) for r in reversed(rows)])
+
+    @app.post("/api/workspace/assistant")
+    def assistant_message(body: AssistantMessage):
+        services.idle()
+        if body.group and services.workshop.similarity.library.group(body.group)["archived"]:
+            raise UserError("این هدف حذف شده است؛ هدف فعال را انتخاب کن.")
+
+        def respond(job):
+            import time
+
+            from .semantic_search import SemanticSearch
+
+            similar = services.workshop.similarity
+            pictures = []
+            if body.run is not None and body.detection is not None:
+                pictures.append(services.workshop.crop_detection(body.run, body.detection))
+            if body.group:
+                members = similar.library.group(body.group)["references"]
+                helper = SemanticSearch(similar)
+                active = [
+                    r for r in members if r["enabled"] and r["label"] == 1 and r["partition"] == "train"
+                ]
+                pictures.extend(helper._image(r["id"]) for r in active[: max(0, 4 - len(pictures))])
+            if not pictures and body.scene:
+                services.workshop.scene(body.scene)
+                with Image.open(services.workshop.images / f"{body.scene}-preview.jpg") as source:
+                    pictures.append(source.convert("RGB"))
+            with services.workshop.connect() as db:
+                previous = db.execute(
+                    "SELECT role,content FROM assistant_messages WHERE target IS ? ORDER BY created DESC LIMIT 24",
+                    (body.group,),
+                ).fetchall()
+                db.execute(
+                    "INSERT INTO assistant_messages VALUES(?,?,?,?,?,?)",
+                    (uuid.uuid4().hex, body.group, "user", body.message, None, time.time()),
+                )
+            reply = services.engine.assistant.understand(
+                job, body.message, pictures, history=[dict(r) for r in reversed(previous)]
+            )
+            job.check()
+            with services.workshop.connect() as db:
+                db.execute(
+                    "INSERT INTO assistant_messages VALUES(?,?,?,?,?,?)",
+                    (
+                        uuid.uuid4().hex,
+                        body.group,
+                        "assistant",
+                        reply["answer_fa"],
+                        reply["model"],
+                        time.time(),
+                    ),
+                )
+            return dict(assistant=reply, instruction=body.message, message="پاسخ مدل آفلاین آماده شد.")
+
+        return services.jobs.submit("assistant", respond)
+
+    @app.delete("/api/workspace/assistant/messages")
+    def clear_assistant_messages(group: str | None = None):
+        services.idle()
+        with services.workshop.connect() as db:
+            db.execute("DELETE FROM assistant_messages WHERE target IS ?", (group,))
+        return dict(deleted=True)
+
+    @app.delete("/api/workspace/assistant/messages/{id}")
+    def delete_assistant_message(id: str):
+        services.idle()
+        with services.workshop.connect() as db:
+            if not db.execute("DELETE FROM assistant_messages WHERE id=?", (id,)).rowcount:
+                raise UserError("پیام پیدا نشد.")
+        return dict(deleted=True)
+
+    @app.patch("/api/workspace/assistant/messages/{id}")
+    def edit_assistant_message(id: str, body: MessageEdit):
+        services.idle()
+        with services.workshop.connect() as db:
+            if not db.execute(
+                "UPDATE assistant_messages SET content=? WHERE id=? AND role='user'", (body.message, id)
+            ).rowcount:
+                raise UserError("پیام قابل ویرایش پیدا نشد.")
+        return dict(updated=True)
+
     @app.post("/api/workspace/concepts")
     def new_concept(body: ConceptName):
         services.idle()
         return services.workshop.new_concept(body.name)
+
+    @app.patch("/api/workspace/concepts/{id}")
+    def rename_concept(id: str, body: ConceptName):
+        services.idle()
+        return services.workshop.rename_concept(id, body.name)
+
+    @app.delete("/api/workspace/concepts/{id}")
+    def delete_concept(id: str):
+        services.idle()
+        return services.workshop.archive_concept(id)
+
+    @app.post("/api/workspace/concepts/{id}/restore")
+    def restore_concept(id: str):
+        services.idle()
+        return services.workshop.archive_concept(id, False)
 
     @app.post("/api/compute")
     def configure_compute(body: ComputeSettings):
