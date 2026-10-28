@@ -39,7 +39,9 @@ def validate_neural(root: Path):
             reply = engine.assistant.understand(Job("assistant"), instruction, [query])
             assert reply["intent"] == "search" and reply["detector_phrases"], reply
             assert not reply["use_colour"] and not reply["excluded_phrases"], reply
+            assert all(p.isascii() for p in reply["detector_phrases"]), reply
             assert any("\u0600" <= c <= "\u06ff" for c in reply["answer_fa"]), reply
+            assert "گرب" in reply["answer_fa"] and "میمون" not in reply["answer_fa"], reply
             cached = engine.assistant.understand(Job("assistant"), instruction, [query])
             assert cached["cached"] and engine.assistant.calls == 1
             engine.assistant.close()
@@ -98,6 +100,23 @@ def validate_neural(root: Path):
             ), image_only
             assert image_only["settings"]["native_image_guidance"] and "assistant" not in image_only
             assert engine.assistant.calls == 1 and engine.objects.vision_calls == vision_calls
+            text_only = workshop.similarity.search(
+                Job("text-guided"),
+                match_mode="instances",
+                scene=imported["id"],
+                instruction=instruction,
+                quality="fast",
+            )
+            text_boxes = [box_tuple(d["bbox"], width, height) for d in text_only["detections"]]
+            assert all(
+                any(intersection_over_union(target, box) > 0.3 for box in text_boxes) for target in truth
+            ), text_only
+            assert text_only["settings"]["reference_count"] == 0
+            assert all(p.isascii() for p in text_only["assistant"]["detector_phrases"]), text_only[
+                "assistant"
+            ]
+            assert "گرب" in text_only["assistant"]["answer_fa"], text_only["assistant"]
+            assert engine.assistant.calls == 2 and engine.assistant.generations == 4
             assert not attempts, attempts
             report = dict(
                 status="passed",
@@ -111,6 +130,11 @@ def validate_neural(root: Path):
                 image_only_neural_search=True,
                 image_only_language_calls=0,
                 image_only_scene_features_reused=True,
+                text_only_neural_search=True,
+                text_only_detections=len(text_boxes),
+                text_only_detector_phrases=text_only["assistant"]["detector_phrases"],
+                machine_plan_language="English",
+                persian_reply_separate=True,
                 seconds=time.monotonic() - started,
                 external_network_attempts=attempts,
                 detector_revision=engine.objects.revision(),

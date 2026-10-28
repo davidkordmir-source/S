@@ -152,6 +152,9 @@ def test_prepared_plan_bound_to_actual_inputs_and_model_revision(tmp_path):
     key = "a" * 64
     plan = AssistantDouble().understand(Job("test"), message)
     plan = {k: v for k, v in plan.items() if k not in ("model", "cached", "prepared_key")}
+    plan["target_name"] = "an arbitrary object"
+    plan["target_description"] = "an arbitrary object"
+    plan["detector_phrases"] = ["an arbitrary object"]
     context = dict(message=message, images=[], revision=assistant.revision())
     (assistant.cache / f"{key}.json").write_text(json.dumps(dict(context=context, plan=plan)))
     assert assistant.understand(Job("test"), message, prepared=key)["cached"]
@@ -228,3 +231,24 @@ def test_image_only_neural_search_does_not_invent_or_generate_a_language_plan(tm
     assert result["detections"] and result["settings"]["native_image_guidance"]
     assert engine.assistant.calls == 0
     assert "assistant" not in result and "assistant" not in result["settings"]
+
+
+def test_machine_plan_cannot_feed_persian_to_the_english_detector():
+    from pydantic import ValidationError
+
+    from atlas.offline_assistant import MachinePlan
+
+    fields = dict(
+        intent="search",
+        target_name="cat",
+        target_description="a cat",
+        detector_phrases=["a cat"],
+        excluded_phrases=[],
+        required_attributes=[],
+        use_colour=False,
+        reference_regions=[],
+        answer_en="I will search for cats of any colour or pose.",
+    )
+    assert MachinePlan(**fields).detector_phrases == ["a cat"]
+    with pytest.raises(ValidationError):
+        MachinePlan(**(fields | dict(detector_phrases=["گربه"])))
