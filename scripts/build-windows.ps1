@@ -6,13 +6,13 @@ if (-not $SkipSetup) { & "$PSScriptRoot/setup-windows.ps1" }
 & cargo test --manifest-path vendor/ecw2tiff/Cargo.toml --no-default-features --locked
 if ($LASTEXITCODE -ne 0) { throw 'Vendored ECW codec regression tests failed.' }
 if (-not (Test-Path 'ui/dist/index.html')) { throw 'Build the UI before packaging.' }
-& '.venv/Scripts/python.exe' scripts/bundle-raster.py
+& '.venv/Scripts/python.exe' scripts/bundle-raster.py 2>&1 | Tee-Object -FilePath raster-build.log
 if ($LASTEXITCODE -ne 0) { throw 'Preparing the verified native ECW/raster decoder failed.' }
 & '.venv/Scripts/python.exe' -c "import logging; from pathlib import Path; from atlas.validation import validate_packaged_formats; logging.basicConfig(level=logging.INFO); validate_packaged_formats(Path('.raster-cache/validation'))"
 if ($LASTEXITCODE -ne 0) { throw 'Actual input image format validation failed before packaging.' }
-& '.venv/Scripts/python.exe' scripts/bundle-models.py
+& '.venv/Scripts/python.exe' scripts/bundle-models.py 2>&1 | Tee-Object -FilePath model-build.log
 if ($LASTEXITCODE -ne 0) { throw 'Preparing verified offline model files failed.' }
-& '.venv/Scripts/python.exe' scripts/bundle-enhanced-models.py
+& '.venv/Scripts/python.exe' scripts/bundle-enhanced-models.py 2>&1 | Tee-Object -FilePath enhanced-build.log
 if ($LASTEXITCODE -ne 0) { throw 'Preparing aerial, segmentation and accelerated model files failed.' }
 & '.venv/Scripts/python.exe' -m pytest -q --junitxml=pytest-results.xml 2>&1 | Tee-Object -FilePath pytest.log
 if ($LASTEXITCODE -ne 0) {

@@ -124,6 +124,18 @@ jobs:
             Get-Content build.log -Tail 120 >> $env:GITHUB_STEP_SUMMARY
             '```' >> $env:GITHUB_STEP_SUMMARY
           }
+          foreach ($BuildLog in @('raster-build.log', 'model-build.log', 'enhanced-build.log')) {
+            if (Test-Path $BuildLog) {
+              if ('${{ job.status }}' -eq 'failure') {
+                $TailText = (Get-Content $BuildLog -Tail 45) -join '%0A'
+                Write-Host "::error title=$BuildLog::$TailText"
+              }
+              "### $BuildLog" >> $env:GITHUB_STEP_SUMMARY
+              '```text' >> $env:GITHUB_STEP_SUMMARY
+              Get-Content $BuildLog -Tail 100 >> $env:GITHUB_STEP_SUMMARY
+              '```' >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
           foreach ($LogPath in @("$env:RUNNER_TEMP/atlas-precision-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-precision-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-formats-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-formats-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ecw-index-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-similar-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-large-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-large-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-smoke/atlas.log", "$env:RUNNER_TEMP/atlas-ai-smoke/startup-error.log", "$env:RUNNER_TEMP/atlas-ai-smoke/atlas.log")) {
             if (Test-Path $LogPath) {
               if ('${{ job.status }}' -eq 'failure') {
@@ -142,6 +154,9 @@ jobs:
           name: windows-build-diagnostics
           path: |
             build.log
+            raster-build.log
+            model-build.log
+            enhanced-build.log
             pytest.log
             pytest-results.xml
             ${{ runner.temp }}/atlas-formats-smoke/*.log
