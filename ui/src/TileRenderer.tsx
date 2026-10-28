@@ -26,7 +26,7 @@ export default function TileRenderer(props: Props) {
       fragment = compile(gl.FRAGMENT_SHADER, 'precision mediump float; uniform sampler2D image; varying vec2 uv; void main(){gl_FragColor=texture2D(image,uv);}');
       program = gl.createProgram()!; gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error('Renderer unavailable');
-    } catch { latest.current.ready(false); gl.getExtension('WEBGL_lose_context')?.loseContext(); return; }
+    } catch { element.dataset.backend = 'fallback'; latest.current.ready(false); gl.getExtension('WEBGL_lose_context')?.loseContext(); return; }
     gl.useProgram(program);
     const buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]), gl.STATIC_DRAW);

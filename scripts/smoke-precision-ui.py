@@ -144,6 +144,11 @@ def main():
                 expect(page.locator(".scene-gpu")).to_have_attribute("data-backend", "fallback")
                 expect(page.locator(".scene-layer")).not_to_have_class(re.compile("gpu-active"))
                 expect(page.locator(".scene-tiles img").first).to_be_visible()
+                page.locator('input[type=file]:not([multiple])[accept^=".png"]').set_input_files(
+                    {"name": "second-scene.png", "mimeType": "image/png", "buffer": stream.getvalue()}
+                )
+                expect(page.locator(".scene-gpu")).to_have_attribute("data-backend", "webgl", timeout=15000)
+                page.wait_for_function("Number(document.querySelector('.scene-gpu')?.dataset.loadedTiles)>0")
             page.screenshot(path="/tmp/atlas-070-precision-ui.png")
             assert not errors, errors
             assert not external, external

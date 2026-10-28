@@ -25,6 +25,16 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: ui/package-lock.json
+      - name: Restore verified offline build inputs
+        id: offline-cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            .model-cache
+            .raster-cache
+          key: atlas-offline-inputs-${{ hashFiles('src/atlas/config.py', 'scripts/bundle-models.py', 'scripts/bundle-enhanced-models.py', 'requirements-lock.txt') }}
+          restore-keys: atlas-offline-inputs-
       - name: Prepare the pinned Rust toolchain for the vendored MIT decoder
         shell: pwsh
         run: rustup toolchain install 1.99.1 --profile minimal
@@ -118,6 +128,16 @@ jobs:
             $TailText = (Get-Content build.log -Tail 35) -join '%0A'
             Write-Host "::error title=Windows build diagnostics::$TailText"
           }
+          $DesktopReport = "$env:RUNNER_TEMP/atlas-smoke/desktop-smoke.json"
+          if (Test-Path $DesktopReport) {
+            $DesktopText = Get-Content $DesktopReport -Raw
+            "### Desktop document" >> $env:GITHUB_STEP_SUMMARY
+            $DesktopText >> $env:GITHUB_STEP_SUMMARY
+            if ('${{ job.status }}' -eq 'failure') {
+              $Escaped = $DesktopText.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Host "::error title=Desktop document::$Escaped"
+            }
+          }
           if (Test-Path build.log) {
             '### Build output' >> $env:GITHUB_STEP_SUMMARY
             '```text' >> $env:GITHUB_STEP_SUMMARY
@@ -165,7 +185,17 @@ jobs:
             ${{ runner.temp }}/atlas-precision-smoke/*.log
             ${{ runner.temp }}/atlas-large-smoke/*.log
             ${{ runner.temp }}/atlas-smoke/*.log
+            ${{ runner.temp }}/atlas-smoke/desktop-smoke.json
             ${{ runner.temp }}/atlas-ai-smoke/*.log
+      - name: Save verified offline build inputs
+        if: ${{ always() && !cancelled() && steps.offline-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            .model-cache
+            .raster-cache
+          key: ${{ steps.offline-cache.outputs.cache-primary-key }}
   publish:
     needs: windows
     if: github.event_name == 'push' && github.ref == 'refs/heads/atlas-scout-preview'

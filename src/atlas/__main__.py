@@ -199,14 +199,41 @@ def main() -> None:
             def received(value):
                 import json
 
-                passed = isinstance(value, dict) and value.get("document") is True
-                (root / "desktop-smoke.json").write_text(json.dumps(value, indent=2), encoding="utf-8")
+                # Qt's JavaScript callback reliably carries primitive strings;
+                # object-to-QVariant conversion differs between Qt bindings.
+                try:
+                    report = json.loads(value) if isinstance(value, str) else value
+                except (ValueError, TypeError):
+                    report = None
+                if not isinstance(report, dict):
+                    report = dict(document=False, returned_type=type(value).__name__)
+                passed = report.get("document") is True
+                (root / "desktop-smoke.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+                logging.info("Desktop document validation: %s", report)
                 smoke_passed.append(passed)
                 print("Desktop document smoke: " + ("PASS" if passed else "FAIL"), flush=True)
                 application.quit()
 
             page.runJavaScript(
-                "(() => {const c=document.createElement('canvas'),gl=c.getContext('webgl');const i=gl?.getExtension('WEBGL_debug_renderer_info');const renderer=gl?String(gl.getParameter(i?i.UNMASKED_RENDERER_WEBGL:gl.RENDERER)):'unavailable';gl?.getExtension('WEBGL_lose_context')?.loseContext();return {document:Boolean(window.__atlasNativeReady && document.querySelector('h1') && document.querySelector('.scene-viewport') && !document.querySelector('.notice.error')),webgl:Boolean(gl),renderer};})()",
+                """(() => {
+                    const result = {
+                        document: Boolean(window.__atlasNativeReady && document.querySelector('h1') && document.querySelector('.scene-viewport') && !document.querySelector('.notice.error')),
+                        native: Boolean(window.__atlasNativeReady),
+                        version: document.querySelector('.version-tag')?.textContent ?? '',
+                        error: document.querySelector('.notice.error')?.textContent ?? '',
+                        webgl: false, renderer: 'unavailable'
+                    };
+                    try {
+                        const gl = document.createElement('canvas').getContext('webgl');
+                        result.webgl = Boolean(gl);
+                        if (gl) {
+                            const info = gl.getExtension('WEBGL_debug_renderer_info');
+                            result.renderer = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+                            gl.getExtension('WEBGL_lose_context')?.loseContext();
+                        }
+                    } catch (error) { result.renderer_error = String(error); }
+                    return JSON.stringify(result);
+                })()""",
                 received,
             )
 
