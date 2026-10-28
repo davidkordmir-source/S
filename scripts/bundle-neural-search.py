@@ -11,8 +11,8 @@ import shutil
 from pathlib import Path
 
 DETECTOR = "google/owlv2-base-patch16-ensemble"
-ASSISTANT = "ggml-org/Qwen2-VL-2B-Instruct-GGUF"
-BASE_ASSISTANT = "Qwen/Qwen2-VL-2B-Instruct"
+ASSISTANT = "Qwen/Qwen3-VL-4B-Instruct-GGUF"
+BASE_ASSISTANT = "Qwen/Qwen3-VL-4B-Instruct"
 
 
 def checksum(path, algorithm="sha256"):
@@ -50,7 +50,20 @@ def prepare(cache, output, lock):
 
     api = HfApi()
     records = {}
-    for kind, repository in [("detector", DETECTOR), ("assistant-model", ASSISTANT)]:
+    # Prefer the model authors' quantization; only the official runtime org is
+    # an alternate source of this SAME 4B model, never a smaller substitute.
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    assistant_repository = lock.get("assistant-model", {}).get("repository", ASSISTANT)
+    if assistant_repository not in (ASSISTANT, "ggml-org/Qwen3-VL-4B-Instruct-GGUF"):
+        raise RuntimeError("Unexpected assistant source in the model lock")
+    if not lock.get("assistant-model", {}).get("revision"):
+        try:
+            api.model_info(assistant_repository)
+        except RepositoryNotFoundError:
+            assistant_repository = "ggml-org/Qwen3-VL-4B-Instruct-GGUF"
+            api.model_info(assistant_repository)
+    for kind, repository in [("detector", DETECTOR), ("assistant-model", assistant_repository)]:
         revision = lock.get(kind, {}).get("revision")
         info = api.model_info(repository, revision=revision, files_metadata=True)
         if revision and info.sha != revision:
@@ -142,6 +155,9 @@ def prepare(cache, output, lock):
                 hashes[filename] = digest
             license_path, license_digest = verified_file(BASE_ASSISTANT, original.sha, "LICENSE", cache)
             shutil.copy2(license_path, folder / "LICENSE")
+            for previous in folder.glob("*.gguf"):
+                if previous.name not in language + projector:
+                    previous.unlink()
             record = dict(
                 repository=repository,
                 revision=revision,

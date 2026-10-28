@@ -38,6 +38,7 @@ def validate_neural(root: Path):
             assert engine.objects.status()["available"] and engine.assistant.status()["available"]
             reply = engine.assistant.understand(Job("assistant"), instruction, [query])
             assert reply["intent"] == "search" and reply["detector_phrases"], reply
+            assert not reply["use_colour"] and not reply["excluded_phrases"], reply
             assert any("\u0600" <= c <= "\u06ff" for c in reply["answer_fa"]), reply
             cached = engine.assistant.understand(Job("assistant"), instruction, [query])
             assert cached["cached"] and engine.assistant.calls == 1

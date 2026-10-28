@@ -35,33 +35,65 @@ def main():
     actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     if actual != REVISION:
         raise RuntimeError("Multimodal runtime source pin mismatch")
+    dirty = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True).strip()
+    if dirty:
+        raise RuntimeError(
+            "The pinned runtime source has local changes; refusing to distribute an unverified build"
+        )
     cmake = Path(sys.executable).parent / ("cmake.exe" if os.name == "nt" else "cmake")
-    run(
-        [
-            cmake,
-            "-S",
-            source,
-            "-B",
-            build,
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON",
-            "-DLLAMA_BUILD_TESTS=OFF",
-            "-DLLAMA_BUILD_EXAMPLES=OFF",
-            "-DLLAMA_BUILD_APP=OFF",
-            "-DLLAMA_BUILD_SERVER=ON",
-            "-DLLAMA_BUILD_UI=OFF",
-            "-DLLAMA_USE_PREBUILT_UI=OFF",
-            "-DLLAMA_CONNECT=OFF",
-            "-DLLAMA_OPENSSL=OFF",
-            "-DLLAMA_SUBPROCESS=OFF",
-            "-DGGML_NATIVE=OFF",
-            "-DGGML_BACKEND_DL=ON",
-            "-DGGML_CPU_ALL_VARIANTS=ON",
-            "-DGGML_CUDA=OFF",
-            "-DGGML_VULKAN=OFF",
-        ]
-    )
-    run([cmake, "--build", build, "--config", "Release", "--target", "llama-server", "--parallel", "2"])
+    executable = "llama-server.exe" if os.name == "nt" else "llama-server"
+    server = next(build.rglob(executable), None) if build.exists() else None
+    cache_file = build / "CMakeCache.txt"
+    cache_text = cache_file.read_text(encoding="utf-8", errors="replace") if cache_file.is_file() else ""
+    requirements = {
+        "LLAMA_BUILD_TESTS": "OFF",
+        "LLAMA_BUILD_EXAMPLES": "OFF",
+        "LLAMA_BUILD_SERVER": "ON",
+        "LLAMA_BUILD_UI": "OFF",
+        "LLAMA_CONNECT": "OFF",
+        "LLAMA_OPENSSL": "OFF",
+        "LLAMA_SUBPROCESS": "OFF",
+        "GGML_NATIVE": "OFF",
+        "GGML_BACKEND_DL": "ON",
+        "GGML_CPU_ALL_VARIANTS": "ON",
+        "GGML_CUDA": "OFF",
+        "GGML_VULKAN": "OFF",
+    }
+    reused = False
+    if server is not None and all(f"{key}:BOOL={value}" in cache_text for key, value in requirements.items()):
+        # Reuse only our runnable build of this exact pinned source and flags.
+        # The actual frozen model tests still run on every distributed build.
+        version = subprocess.run([str(server), "--version"], capture_output=True, text=True)
+        reused = version.returncode == 0 and REVISION[:7] in version.stdout + version.stderr
+    if reused:
+        print("Reusing the verified pinned native runtime build", flush=True)
+    else:
+        run(
+            [
+                cmake,
+                "-S",
+                source,
+                "-B",
+                build,
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON",
+                "-DLLAMA_BUILD_TESTS=OFF",
+                "-DLLAMA_BUILD_EXAMPLES=OFF",
+                "-DLLAMA_BUILD_APP=OFF",
+                "-DLLAMA_BUILD_SERVER=ON",
+                "-DLLAMA_BUILD_UI=OFF",
+                "-DLLAMA_USE_PREBUILT_UI=OFF",
+                "-DLLAMA_CONNECT=OFF",
+                "-DLLAMA_OPENSSL=OFF",
+                "-DLLAMA_SUBPROCESS=OFF",
+                "-DGGML_NATIVE=OFF",
+                "-DGGML_BACKEND_DL=ON",
+                "-DGGML_CPU_ALL_VARIANTS=ON",
+                "-DGGML_CUDA=OFF",
+                "-DGGML_VULKAN=OFF",
+            ]
+        )
+        run([cmake, "--build", build, "--config", "Release", "--target", "llama-server", "--parallel", "2"])
     executable = "llama-server.exe" if os.name == "nt" else "llama-server"
     server = next(build.rglob(executable), None)
     if server is None:

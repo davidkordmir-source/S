@@ -5,7 +5,6 @@
     "revision": "cfd3195ba4ea9592eec887ded089f4c08eff231d"
   },
   "assistant-model": {
-    "repository": "ggml-org/Qwen2-VL-2B-Instruct-GGUF",
-    "revision": "bb307c036e8a1ed7b663bbd0c35b41c4c9294cfd"
+    "repository": "Qwen/Qwen3-VL-4B-Instruct-GGUF"
   }
 }

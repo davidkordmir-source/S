@@ -59,6 +59,7 @@ jobs:
           if (-not $ApplicationProcess.WaitForExit(1200000)) { $ApplicationProcess.Kill(); throw 'Real multimodal inference check timed out.' }
           if ($ApplicationProcess.ExitCode -ne 0) { throw 'Real multimodal inference or nonidentical instance detection failed.' }
           Get-Content "$env:ATLAS_DATA_DIR/neural-smoke.json"
+          Copy-Item "$env:ATLAS_DATA_DIR/neural-smoke.json" dist/neural-smoke.json
       - name: Test actual image decoders and ECW v2/v3 in the executable
         shell: pwsh
         env:
@@ -142,6 +143,7 @@ jobs:
             dist/AtlasScout-Package.json
             dist/AI-MODELS.json
             dist/installer-smoke.json
+            dist/neural-smoke.json
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
@@ -247,7 +249,7 @@ jobs:
         shell: bash
         run: |
           cat > release-notes.md <<'NOTES'
-          Offline Windows x64 preview with a real local Qwen2-VL vision-language assistant and native OWLv2 image/text-guided instance detection. Free Persian/English instructions, one or more optional reference images, editable descriptions, deletable/restorable training targets and editable/deletable chat messages. The new instance search does not require template correlation or matching pixel layout. The previous exact matching mode remains available.
+          Offline Windows x64 preview with a real local Qwen3-VL-4B vision-language assistant and native OWLv2 image/text-guided instance detection. Free Persian/English instructions, one or more optional reference images, editable descriptions, deletable/restorable training targets and editable/deletable chat messages. The new instance search does not require template correlation or matching pixel layout. The previous exact matching mode remains available.
 
           Download AtlasScout-Setup.exe and ALL AtlasScout-Windows.part files into the same folder. Run the setup EXE and choose a new destination folder. Setup verifies each part and the full ZIP64 checksum before extraction. No internet, Python or Node.js is required on the destination machine. Keep the whole installed folder. Existing training data is stored separately and preserved.
 
@@ -255,4 +257,4 @@ jobs:
 
           Native checks run the real VLM and detect two nonidentical objects in the official COCO example, in addition to previous actual-model, desktop, raster, ECW and sparse BigTIFF checks. This functional fixture does not establish satellite detection accuracy. Arbitrary requests are accepted by the language model; visible evidence, image resolution and detector capabilities still limit results. Model scores are not calibrated probabilities. Original pixel coordinates are exported; geographic export is not supported. No proprietary ECW SDK is included.
           NOTES
-          gh release create "$RELEASE_TAG" package/AtlasScout-Setup.exe package/AtlasScout-Windows.part* package/AtlasScout-Package.json package/AI-MODELS.json package/installer-smoke.json package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.8.0 Offline — Local vision-language AI and instance detection' --notes-file release-notes.md
+          gh release create "$RELEASE_TAG" package/AtlasScout-Setup.exe package/AtlasScout-Windows.part* package/AtlasScout-Package.json package/AI-MODELS.json package/installer-smoke.json package/neural-smoke.json package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.8.0 Offline — Local vision-language AI and instance detection' --notes-file release-notes.md
