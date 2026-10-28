@@ -145,7 +145,9 @@ def prepare(cache, output, lock):
                     "Expected one Q4_K_M language model and one F16 multimodal projector: "
                     + json.dumps(dict(language=language, projector=projector))
                 )
-            original = api.model_info(BASE_ASSISTANT)
+            original = api.model_info(
+                BASE_ASSISTANT, revision=lock.get("assistant-model", {}).get("original_revision")
+            )
             card = original.card_data.to_dict() if original.card_data else {}
             if card.get("license") != "apache-2.0":
                 raise RuntimeError("Unexpected Qwen model license; review before distribution")
@@ -153,8 +155,36 @@ def prepare(cache, output, lock):
                 source, digest = verified_file(repository, revision, filename, cache)
                 shutil.copy2(source, folder / filename)
                 hashes[filename] = digest
-            license_path, license_digest = verified_file(BASE_ASSISTANT, original.sha, "LICENSE", cache)
+            license_names = [
+                f.rfilename
+                for f in original.siblings
+                if f.rfilename.lower() in ("license", "license.txt", "license.md")
+            ]
+            card_path, card_digest = verified_file(BASE_ASSISTANT, original.sha, "README.md", cache)
+            shutil.copy2(card_path, folder / "ORIGINAL_MODEL_CARD.md")
+            if license_names:
+                license_name = sorted(license_names)[0]
+                license_path, license_digest = verified_file(
+                    BASE_ASSISTANT, original.sha, license_name, cache
+                )
+                license_source = f"{BASE_ASSISTANT}@{original.sha}/{license_name}"
+            else:
+                # The pinned official card explicitly declares Apache-2.0 (checked
+                # above). Include its standard text and preserve the actual card;
+                # do not invent an upstream LICENSE file or an alternative license.
+                license_path = Path(__file__).resolve().parents[1] / "vendor/owlv2/LICENSE"
+                license_digest = checksum(license_path)
+                license_source = (
+                    "Apache License 2.0 standard text; official license declaration in ORIGINAL_MODEL_CARD.md"
+                )
             shutil.copy2(license_path, folder / "LICENSE")
+            (folder / "NOTICE.md").write_text(
+                f"Qwen3-VL-4B-Instruct\nOriginal model: {BASE_ASSISTANT}@{original.sha}\n"
+                f"Published GGUF source: {repository}@{revision}\n"
+                "Original author: Qwen. The official model card declares Apache-2.0 and is included.\n"
+                "Published Q4_K_M decoder and F16 vision projector, used locally without foundation-model finetuning.\n",
+                encoding="utf-8",
+            )
             for previous in folder.glob("*.gguf"):
                 if previous.name not in language + projector:
                     previous.unlink()
@@ -164,7 +194,9 @@ def prepare(cache, output, lock):
                 source_files=hashes,
                 original_repository=BASE_ASSISTANT,
                 original_revision=original.sha,
-                original_license_sha256=license_digest,
+                license_text_source=license_source,
+                license_sha256=license_digest,
+                original_model_card_sha256=card_digest,
                 license="Apache-2.0",
                 language_file=language[0],
                 projector_file=projector[0],
