@@ -50,8 +50,11 @@ jobs:
           ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-neural-smoke
           ATLAS_NEURAL_FIXTURE: ${{ runner.temp }}/coco-two-cats.jpg
         run: |
-          try { Invoke-WebRequest 'https://images.cocodataset.org/val2017/000000039769.jpg' -OutFile $env:ATLAS_NEURAL_FIXTURE }
-          catch { Invoke-WebRequest 'https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/coco_sample.png' -OutFile $env:ATLAS_NEURAL_FIXTURE }
+          try { Invoke-WebRequest 'https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/coco_sample.png' -OutFile $env:ATLAS_NEURAL_FIXTURE }
+          catch {
+            try { Invoke-WebRequest 'https://images.cocodataset.org/val2017/000000039769.jpg' -OutFile $env:ATLAS_NEURAL_FIXTURE }
+            catch { Write-Host "::error title=Neural fixture download::$($_.Exception.Message)"; throw }
+          }
           $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--neural-smoke-test' -PassThru
           if (-not $ApplicationProcess.WaitForExit(1200000)) { $ApplicationProcess.Kill(); throw 'Real multimodal inference check timed out.' }
           if ($ApplicationProcess.ExitCode -ne 0) { throw 'Real multimodal inference or nonidentical instance detection failed.' }

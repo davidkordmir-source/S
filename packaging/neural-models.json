@@ -1,0 +1,11 @@
+{
+  "format": "atlas-neural-source-lock-v1",
+  "detector": {
+    "repository": "google/owlv2-base-patch16-ensemble",
+    "revision": "cfd3195ba4ea9592eec887ded089f4c08eff231d"
+  },
+  "assistant-model": {
+    "repository": "ggml-org/Qwen2-VL-2B-Instruct-GGUF",
+    "revision": "bb307c036e8a1ed7b663bbd0c35b41c4c9294cfd"
+  }
+}
