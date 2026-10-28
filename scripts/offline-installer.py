@@ -69,7 +69,7 @@ class JoinedReader(io.RawIOBase):
         super().close()
 
 
-def install(manifest, folder, destination, progress=lambda value, text: None):
+def verify(manifest, folder, progress=lambda value, text: None):
     paths, complete, done = [], hashlib.sha256(), 0
     for item in manifest["parts"]:
         path = folder / item["name"]
@@ -87,8 +87,13 @@ def install(manifest, folder, destination, progress=lambda value, text: None):
         paths.append(path)
     if complete.hexdigest() != manifest["archive_sha256"]:
         raise ValueError("Complete archive checksum mismatch")
+    return paths
+
+
+def install(manifest, folder, destination, progress=lambda value, text: None):
     if destination.exists():
         raise ValueError("Choose a NEW destination folder. Existing installations are never overwritten.")
+    paths = verify(manifest, folder, progress)
     staging = destination.with_name(destination.name + ".installing")
     if staging.exists():
         raise ValueError("A previous installation is unfinished. Choose another destination folder.")
@@ -126,6 +131,30 @@ def main():
         else folder / "AtlasScout-Package.json"
     )
     manifest = json.loads(data.read_text(encoding="utf-8"))
+    if "--verify-package" in sys.argv:
+        paths = verify(manifest, folder)
+        with JoinedReader(paths) as source, zipfile.ZipFile(source) as archive:
+            if archive.testzip() is not None:
+                raise ValueError("Archive CRC validation failed")
+            assert "AtlasScout/AtlasScout.exe" in archive.namelist()
+        window = tk.Tk()
+        window.withdraw()
+        window.update()
+        window.destroy()
+        (folder / "installer-smoke.json").write_text(
+            json.dumps(
+                dict(
+                    status="passed",
+                    parts=len(paths),
+                    archive_sha256=manifest["archive_sha256"],
+                    archive_bytes=manifest["archive_bytes"],
+                    all_zip_crc_checked=True,
+                    native_tk_window=True,
+                )
+            ),
+            encoding="utf-8",
+        )
+        return
     window = tk.Tk()
     window.title("Atlas Scout 0.8 — Offline Setup")
     window.geometry("610x280")

@@ -12,7 +12,8 @@ import numpy as np
 import pytest
 from conftest import wait_job
 from fastapi.testclient import TestClient
-from offline_support import OfflineTestEngine, scene_bytes
+from neural_support import AssistantDouble, NeuralDouble
+from offline_support import scene_bytes
 from scipy.special import expit
 
 from atlas.errors import UserError
@@ -22,66 +23,6 @@ from atlas.offline_assistant import OfflineAssistant
 from atlas.offline_server import OfflineServices, create_app
 from atlas.visual_features import unit
 from atlas.workshop import Workshop
-
-
-class AssistantDouble:
-    def __init__(self):
-        self.calls = 0
-
-    def status(self):
-        return dict(available=True, loaded=False, model="explicit wiring double")
-
-    def revision(self):
-        return "test-assistant"
-
-    def understand(self, job, message, pictures=(), **kwargs):
-        self.calls += 1
-        return dict(
-            intent="search",
-            answer_fa="پاسخ آزمایشی رابط؛ مدل واقعی نیست.",
-            target_description=message,
-            detector_phrases=[message or "target"],
-            excluded_phrases=[],
-            required_attributes=[],
-            use_colour=False,
-            reference_regions=[],
-            model="explicit wiring double",
-            cached=False,
-            prepared_key="a" * 64,
-        )
-
-    def close(self):
-        pass
-
-
-class DetectorDouble(ObjectDetector):
-    def __init__(self):
-        self.vision_calls = 0
-
-    def revision(self):
-        return "test-detector"
-
-    def scene(self, picture, resolution=768, colour=False):
-        self.vision_calls += 1
-        return dict(
-            classes=np.eye(3, 512, dtype=np.float32),
-            boxes=np.array([[0.2, 0.2, 0.2, 0.2], [0.7, 0.2, 0.2, 0.2], [0.5, 0.6, 0.2, 0.2]], np.float32),
-            shift=np.full(3, -0.2, np.float32),
-            scale=np.ones(3, np.float32) * 3,
-            objectness=np.ones(3, np.float32),
-        )
-
-    def text_queries(self, phrases):
-        return np.eye(len(phrases), 512, dtype=np.float32)
-
-    def image_query(self, picture, resolution=768, colour=False):
-        return np.eye(1, 512, dtype=np.float32)
-
-
-class NeuralDouble(OfflineTestEngine):
-    def __init__(self):
-        super().__init__()
-        self.assistant, self.objects = AssistantDouble(), DetectorDouble()
 
 
 def test_model_head_keeps_absolute_scores_and_selects_real_reference():
@@ -136,6 +77,7 @@ def test_text_only_search_reuses_scene_on_new_instruction_and_threshold(tmp_path
     result = w.similarity.search(Job("scan"), **options)
     assert result["detections"] and result["settings"]["match_mode"] == "instances"
     assert engine.objects.vision_calls == 1
+    assert len(engine.assistant.last_pictures) == 1  # real scene context also in text-only mode
     w.similarity.search(Job("scan"), **options, threshold=0.8)
     assert engine.objects.vision_calls == 1 and engine.assistant.calls == 1
     next_result = w.similarity.search(Job("scan"), **(options | dict(instruction="یک درخواست متفاوت")))
@@ -252,3 +194,24 @@ def test_multipart_installer_seek_integrity_and_atomic_extraction(tmp_path):
     with pytest.raises(ValueError, match="Checksum"):
         module.install(manifest, tmp_path, tmp_path / "rejected")
     assert not (tmp_path / "rejected").exists()
+
+
+def test_old_library_schema_migrates_without_losing_targets_or_images(tmp_path):
+    engine = NeuralDouble()
+    workshop = Workshop(tmp_path, engine)
+    library = workshop.similarity.library
+    group = library.create("هدف قدیمی")["id"]
+    reference = workshop.similarity.add_file(scene_bytes(), "old.png")
+    library.add(group, reference["id"])
+    concept = workshop.new_concept("آموزش قدیمی")["id"]
+    with workshop.connect() as db:
+        for column in ("description", "excluded_description", "archived"):
+            db.execute(f"ALTER TABLE reference_groups DROP COLUMN {column}")
+        db.execute("ALTER TABLE concepts DROP COLUMN archived")
+    restored = Workshop(tmp_path, engine)
+    assert restored.concepts()[0]["id"] == concept
+    assert restored.similarity.library.group(group)["description"] == ""
+    assert restored.similarity.library.group(group)["references"][0]["id"] == reference["id"]
+    restored.similarity.library.archive(group)
+    restored.similarity.library.archive(group, False)
+    assert (restored.similarity.folder / f"{reference['id']}.png").is_file()

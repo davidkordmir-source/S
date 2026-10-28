@@ -32,3 +32,5 @@
 .assistant-message p{font-size:12px;line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0 0}
 .assistant-actions{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 10px}
 .assistant-actions button{display:flex;align-items:center;gap:5px;padding:8px}
+
+.assistant-details{margin:10px 0;font-size:12px}.assistant-details>summary{cursor:pointer;padding:10px 8px;background:#f1f6f2;border-radius:7px;color:#315c47}.assistant-details[open]>summary{margin-bottom:8px}

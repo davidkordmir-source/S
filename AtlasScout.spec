@@ -9,7 +9,7 @@ for notice in ("LICENSE", "PROVENANCE.md", "ATLAS_CHANGES.md"):
     datas.append((str(root / "vendor/ecw2tiff" / notice), "third-party/ecw2tiff"))
 for notice in ("LICENSE", "NOTICE.md"):
     datas.append((str(root / "vendor/dinov2" / notice), "third-party/dinov2"))
-for package in ("remoteclip", "sam2"):
+for package in ("remoteclip", "sam2", "owlv2"):
     for notice in ("LICENSE", "NOTICE.md"):
         datas.append((str(root / "vendor" / package / notice), "third-party/" + package))
 for kind in ("aerial", "segment"):
@@ -26,7 +26,8 @@ for kind in ('detector', 'assistant-model'):
         raise RuntimeError('Run scripts/bundle-neural-search.py: ' + kind)
 if not (root / '.assistant-bundle/llama-server.exe').is_file():
     raise RuntimeError('Run scripts/bundle-assistant-runtime.py before packaging')
-datas += [(str(root / '.assistant-bundle'), 'assistant')]
+assistant_binaries = [(str(path), 'assistant') for path in (root / '.assistant-bundle').iterdir() if path.suffix.lower() in ('.exe', '.dll')]
+datas += [(str(path), 'assistant') for path in (root / '.assistant-bundle').iterdir() if path.is_file() and path.suffix.lower() not in ('.exe', '.dll')]
 datas += [(str(root / '.model-bundle'), 'models')]
 if not (root / ".raster-bundle/native-validation.json").is_file():
     raise RuntimeError("Run scripts/bundle-raster.py and validate the raster tools before packaging")
@@ -34,7 +35,7 @@ datas += [(str(root / ".raster-bundle"), "raster"), (str(root / "tests/data"), "
 raster_data, raster_binaries, raster_imports = collect_all("rasterio")
 dll_data, dll_binaries = collect_delvewheel_libs_directory("rasterio")
 datas += raster_data + dll_data
-binaries = collect_dynamic_libs("pillow_heif") + raster_binaries + dll_binaries
+binaries = collect_dynamic_libs("pillow_heif") + raster_binaries + dll_binaries + assistant_binaries
 binaries += collect_dynamic_libs("onnxruntime")
 datas += collect_data_files("onnxruntime")
 datas += copy_metadata("onnxruntime-directml")

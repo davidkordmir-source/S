@@ -50,7 +50,8 @@ jobs:
           ATLAS_DATA_DIR: ${{ runner.temp }}/atlas-neural-smoke
           ATLAS_NEURAL_FIXTURE: ${{ runner.temp }}/coco-two-cats.jpg
         run: |
-          Invoke-WebRequest 'https://images.cocodataset.org/val2017/000000039769.jpg' -OutFile $env:ATLAS_NEURAL_FIXTURE
+          try { Invoke-WebRequest 'https://images.cocodataset.org/val2017/000000039769.jpg' -OutFile $env:ATLAS_NEURAL_FIXTURE }
+          catch { Invoke-WebRequest 'https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/coco_sample.png' -OutFile $env:ATLAS_NEURAL_FIXTURE }
           $ApplicationProcess = Start-Process -FilePath './dist/AtlasScout/AtlasScout.exe' -ArgumentList '--neural-smoke-test' -PassThru
           if (-not $ApplicationProcess.WaitForExit(1200000)) { $ApplicationProcess.Kill(); throw 'Real multimodal inference check timed out.' }
           if ($ApplicationProcess.ExitCode -ne 0) { throw 'Real multimodal inference or nonidentical instance detection failed.' }
@@ -117,6 +118,13 @@ jobs:
           if (-not $ApplicationProcess.WaitForExit(900000)) { $ApplicationProcess.Kill(); throw 'AI smoke timed out.' }
           if ($ApplicationProcess.ExitCode -ne 0) { throw 'Packaged real AI smoke failed.' }
           Get-Content "$env:ATLAS_DATA_DIR/ai-smoke.json"
+      - name: Verify actual offline installer, all archive parts and ZIP CRCs
+        shell: pwsh
+        run: |
+          $InstallerProcess = Start-Process -FilePath './dist/AtlasScout-Setup.exe' -ArgumentList '--verify-package' -PassThru
+          if (-not $InstallerProcess.WaitForExit(600000)) { $InstallerProcess.Kill(); throw 'Offline installer verification timed out.' }
+          if ($InstallerProcess.ExitCode -ne 0) { throw 'Offline installer integrity or native GUI verification failed.' }
+          Get-Content 'dist/installer-smoke.json'
       - name: Verify bounded package assets
         shell: pwsh
         run: |
@@ -130,6 +138,7 @@ jobs:
             dist/AtlasScout-Windows.part*
             dist/AtlasScout-Package.json
             dist/AI-MODELS.json
+            dist/installer-smoke.json
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
@@ -242,4 +251,4 @@ jobs:
 
           Native checks run the real VLM and detect two nonidentical objects in the official COCO example, in addition to previous actual-model, desktop, raster, ECW and sparse BigTIFF checks. This functional fixture does not establish satellite detection accuracy. Arbitrary requests are accepted by the language model; visible evidence, image resolution and detector capabilities still limit results. Model scores are not calibrated probabilities. Original pixel coordinates are exported; geographic export is not supported. No proprietary ECW SDK is included.
           NOTES
-          gh release create "$RELEASE_TAG" package/AtlasScout-Setup.exe package/AtlasScout-Windows.part* package/AtlasScout-Package.json package/AI-MODELS.json package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.8.0 Offline — Local vision-language AI and instance detection' --notes-file release-notes.md
+          gh release create "$RELEASE_TAG" package/AtlasScout-Setup.exe package/AtlasScout-Windows.part* package/AtlasScout-Package.json package/AI-MODELS.json package/installer-smoke.json package/SHA256SUMS.txt --repo "$REPOSITORY" --target "$COMMIT" --prerelease --title 'Atlas Scout 0.8.0 Offline — Local vision-language AI and instance detection' --notes-file release-notes.md

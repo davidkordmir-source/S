@@ -44,6 +44,7 @@ def main():
             "-B",
             build,
             "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON",
             "-DLLAMA_BUILD_TESTS=OFF",
             "-DLLAMA_BUILD_EXAMPLES=OFF",
             "-DLLAMA_BUILD_APP=OFF",

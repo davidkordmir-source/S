@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import time
+import uuid
 
 import numpy as np
 from PIL import Image
@@ -158,7 +159,7 @@ class SemanticSearch:
             except (OSError, ValueError, EOFError):
                 path.unlink(missing_ok=True)
         vectors = self.engine.objects.image_query(picture, resolution, colour)
-        temporary = path.with_suffix(".tmp")
+        temporary = path.with_name(path.name + "-" + uuid.uuid4().hex + ".tmp")
         with temporary.open("wb") as stream:
             np.save(stream, vectors, allow_pickle=False)
         temporary.replace(path)
@@ -175,6 +176,11 @@ class SemanticSearch:
         references = settings["references"]
         if "assistant" not in settings:
             pictures = [self._image(r["id"]) for r in references[:4]]
+            if not pictures:
+                # Bind text-only/chat plans to the same actual scene overview.
+                # The original large image is still read in bounded detector tiles.
+                with Image.open(self.workshop.images / f"{settings['scene']}-preview.jpg") as preview:
+                    pictures.append(preview.convert("RGB"))
             message = settings["instruction"]
             if settings["excluded_description"]:
                 message += "\nموارد نامطلوب: " + settings["excluded_description"]
